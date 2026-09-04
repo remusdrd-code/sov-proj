@@ -86,6 +86,21 @@ class Simulation:
     def state(self) -> SimulationState:
         return self._state
 
+    def add_resources(self, amounts: Mapping[str, float]) -> None:
+        resources = dict(self._state.resources)
+        for resource, amount in amounts.items():
+            resources[resource] = resources.get(resource, 0) + amount
+        self._state = SimulationState(
+            date=self._state.date,
+            resources=MappingProxyType(resources),
+            facilities=self._state.facilities,
+            projects=self._state.projects,
+            routes=self._state.routes,
+            national_map=self._state.national_map,
+            paused=self._state.paused,
+            speed=self._state.speed,
+        )
+
     def pause(self) -> None:
         self._state = SimulationState(
             date=self._state.date,
@@ -140,6 +155,7 @@ class Simulation:
 
         resources = dict(self._state.resources)
         project_states = self._advance_projects(resources)
+        project_states = self._operate_commissioned_projects(project_states, resources)
         facility_states: dict[str, FacilityState] = {}
         for name, facility_state in self._state.facilities.items():
             facility = facility_state.facility
@@ -202,3 +218,42 @@ class Simulation:
                 stage=next_stage,
             )
         return project_states
+
+    def _operate_commissioned_projects(
+        self,
+        project_states: Mapping[str, ProjectState],
+        resources: dict[str, float],
+    ) -> dict[str, ProjectState]:
+        operated: dict[str, ProjectState] = {}
+        for name, project_state in project_states.items():
+            if project_state.stage != ProjectStage.COMMISSIONED:
+                operated[name] = project_state
+                continue
+            operating_inputs = project_state.project.operating_inputs
+            if not operating_inputs:
+                operated[name] = project_state
+                continue
+            shares: list[float] = []
+            binding: str | None = None
+            min_share = 1.0
+            for resource, required in operating_inputs.items():
+                available = max(0, resources.get(resource, 0))
+                share = min(1.0, available / required)
+                shares.append(share)
+                if share < 1.0 and (binding is None or share < min_share):
+                    binding = resource
+                    min_share = share
+            utilization = min(shares)
+            output = project_state.commissioned_capacity * utilization
+            for resource, required in operating_inputs.items():
+                resources[resource] = max(
+                    0, resources.get(resource, 0) - required * utilization
+                )
+            operated[name] = ProjectState(
+                project=project_state.project,
+                stage=project_state.stage,
+                blocked_by=project_state.blocked_by,
+                operating_output=output,
+                binding_constraint=binding,
+            )
+        return operated

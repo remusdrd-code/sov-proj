@@ -38,10 +38,16 @@ class Project:
     nameplate_capacity: float
     stage_costs: Mapping[ProjectStage, Mapping[str, float]]
     priority: int = 0
+    operating_inputs: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
         if self.nameplate_capacity <= 0:
             raise ValueError("project capacity must be positive")
+        if self.operating_inputs is not None:
+            if not self.operating_inputs:
+                raise ValueError("operating inputs must not be empty when provided")
+            if any(amount <= 0 for amount in self.operating_inputs.values()):
+                raise ValueError("operating input requirements must be positive")
         missing_stages = set(CONSTRUCTION_STAGES) - set(self.stage_costs)
         if missing_stages:
             raise ValueError(f"project is missing stages: {missing_stages}")
@@ -63,6 +69,8 @@ class ProjectState:
     project: Project
     stage: ProjectStage
     blocked_by: tuple[str, ...] = ()
+    operating_output: float = 0
+    binding_constraint: str | None = None
 
     @property
     def planned_capacity(self) -> float:
@@ -92,8 +100,8 @@ class ProjectState:
         return 0
 
     @property
-    def operating_output(self) -> float:
-        return 0
+    def nameplate_capacity(self) -> float:
+        return self.project.nameplate_capacity
 
     @property
     def utilization(self) -> float:

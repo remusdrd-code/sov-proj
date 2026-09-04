@@ -299,5 +299,140 @@ class SimulationTests(unittest.TestCase):
         }
 
 
+class FractionalOperationTests(unittest.TestCase):
+    """Issue 05: commissioned facilities operate at fractional utilization."""
+
+    def make_commissioned_simulation(self, resources: dict[str, float]) -> Simulation:
+        project = Project(
+            name="Donbas coke works",
+            region="Donbas",
+            nameplate_capacity=100,
+            stage_costs={
+                ProjectStage.SURVEY: {"survey": 1},
+                ProjectStage.DESIGN: {"design": 1},
+                ProjectStage.CIVIL_WORKS: {"construction_materials": 2},
+                ProjectStage.EQUIPMENT: {"equipment": 1},
+                ProjectStage.ELECTRICITY: {"electricity": 1},
+                ProjectStage.LABOR: {"labor": 1},
+                ProjectStage.FREIGHT_ACCESS: {"logistics": 1},
+                ProjectStage.MAINTENANCE: {"maintenance_support": 1},
+                ProjectStage.TRIAL_OPERATION: {"trial_operation": 1},
+            },
+            operating_inputs={
+                "fuel": 10,
+                "freight": 5,
+                "materials": 5,
+                "maintenance": 2,
+                "services": 1,
+                "power": 4,
+                "labor": 3,
+            },
+        )
+        return Simulation(
+            start_date=datetime.date(1928, 1, 1),
+            resources=resources,
+            projects=(project,),
+        )
+
+    def commission(self, simulation: Simulation) -> None:
+        for _ in range(len(ProjectStage) - 1):
+            simulation.tick()
+
+    @staticmethod
+    def operating_resources(
+        fuel: float,
+        freight: float = 5,
+        logistics: float = 1,
+        maintenance_support: float = 1,
+    ) -> dict[str, float]:
+        return {
+            "survey": 1,
+            "design": 1,
+            "construction_materials": 2,
+            "equipment": 1,
+            "electricity": 1,
+            "labor": 1,
+            "logistics": logistics,
+            "maintenance_support": maintenance_support,
+            "trial_operation": 1,
+            "fuel": fuel,
+            "freight": freight,
+            "materials": 5,
+            "maintenance": 2,
+            "services": 1,
+            "power": 4,
+            "labor": 3,
+        }
+
+    def test_commissioned_facility_operates_fractionally_when_fuel_deficient(self) -> None:
+        simulation = self.make_commissioned_simulation(self.operating_resources(3.4))
+        self.commission(simulation)
+
+        state = simulation.state.projects["Donbas coke works"]
+
+        self.assertEqual(state.stage, ProjectStage.COMMISSIONED)
+        self.assertEqual(state.commissioned_capacity, 100)
+        self.assertAlmostEqual(state.operating_output, 34)
+        self.assertAlmostEqual(state.utilization, 0.34)
+        self.assertEqual(state.binding_constraint, "fuel")
+
+    def test_binding_constraint_recovers_when_corrected(self) -> None:
+        simulation = self.make_commissioned_simulation(self.operating_resources(3.4))
+        self.commission(simulation)
+        self.assertAlmostEqual(
+            simulation.state.projects["Donbas coke works"].utilization, 0.34
+        )
+
+        simulation.add_resources(
+            {
+                "fuel": 10.0,
+                "freight": 2.7,
+                "materials": 1.7,
+                "maintenance": 1.68,
+                "services": 0.34,
+                "power": 1.36,
+                "labor": 2.02,
+            }
+        )
+        simulation.tick()
+
+        state = simulation.state.projects["Donbas coke works"]
+        self.assertAlmostEqual(state.operating_output, 100)
+        self.assertAlmostEqual(state.utilization, 1.0)
+        self.assertIsNone(state.binding_constraint)
+
+    def test_freight_deficiency_is_identified_as_binding_constraint(self) -> None:
+        simulation = self.make_commissioned_simulation(self.operating_resources(10, 1))
+        self.commission(simulation)
+
+        state = simulation.state.projects["Donbas coke works"]
+
+        self.assertEqual(state.binding_constraint, "freight")
+        self.assertAlmostEqual(state.utilization, 0.2)
+
+    def test_nameplate_commissioned_output_and_utilization_remain_distinct(self) -> None:
+        simulation = self.make_commissioned_simulation(self.operating_resources(5))
+        self.commission(simulation)
+
+        state = simulation.state.projects["Donbas coke works"]
+
+        self.assertEqual(state.planned_capacity, 100)
+        self.assertEqual(state.nameplate_capacity, 100)
+        self.assertEqual(state.commissioned_capacity, 100)
+        self.assertAlmostEqual(state.operating_output, 50)
+        self.assertAlmostEqual(state.utilization, 0.5)
+        self.assertEqual(state.binding_constraint, "fuel")
+
+    def test_uncommissioned_project_has_no_operating_output(self) -> None:
+        simulation = self.make_commissioned_simulation(self.operating_resources(10))
+
+        state = simulation.tick().projects["Donbas coke works"]
+
+        self.assertNotEqual(state.stage, ProjectStage.COMMISSIONED)
+        self.assertEqual(state.operating_output, 0)
+        self.assertEqual(state.utilization, 0)
+        self.assertIsNone(state.binding_constraint)
+
+
 if __name__ == "__main__":
     unittest.main()
