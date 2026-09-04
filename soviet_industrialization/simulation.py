@@ -7,6 +7,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from .map import NationalMap, default_national_map
+from .project import Project, ProjectStage, ProjectState
 
 
 class SimulationSpeed(IntEnum):
@@ -39,6 +40,7 @@ class SimulationState:
     date: datetime.date
     resources: Mapping[str, float]
     facilities: Mapping[str, FacilityState]
+    projects: Mapping[str, ProjectState]
     national_map: NationalMap
     paused: bool = False
     speed: SimulationSpeed = SimulationSpeed.NORMAL
@@ -52,6 +54,7 @@ class Simulation:
         start_date: datetime.date,
         resources: Mapping[str, float],
         facilities: tuple[Facility, ...] = (),
+        projects: tuple[Project, ...] = (),
         national_map: NationalMap | None = None,
     ) -> None:
         facility_states = {
@@ -59,10 +62,16 @@ class Simulation:
         }
         if len(facility_states) != len(facilities):
             raise ValueError("facility names must be unique")
+        project_states = {
+            project.name: ProjectState.planned_for(project) for project in projects
+        }
+        if len(project_states) != len(projects):
+            raise ValueError("project names must be unique")
         self._state = SimulationState(
             date=start_date,
             resources=MappingProxyType(dict(resources)),
             facilities=MappingProxyType(facility_states),
+            projects=MappingProxyType(project_states),
             national_map=national_map or default_national_map(),
         )
 
@@ -75,6 +84,7 @@ class Simulation:
             date=self._state.date,
             resources=self._state.resources,
             facilities=self._state.facilities,
+            projects=self._state.projects,
             national_map=self._state.national_map,
             paused=True,
             speed=self._state.speed,
@@ -85,6 +95,7 @@ class Simulation:
             date=self._state.date,
             resources=self._state.resources,
             facilities=self._state.facilities,
+            projects=self._state.projects,
             national_map=self._state.national_map,
             paused=False,
             speed=self._state.speed,
@@ -96,6 +107,7 @@ class Simulation:
                 date=self._state.date,
                 resources=self._state.resources,
                 facilities=self._state.facilities,
+                projects=self._state.projects,
                 national_map=self._state.national_map,
                 paused=True,
                 speed=speed,
@@ -105,6 +117,7 @@ class Simulation:
             date=self._state.date,
             resources=self._state.resources,
             facilities=self._state.facilities,
+            projects=self._state.projects,
             national_map=self._state.national_map,
             paused=False,
             speed=speed,
@@ -115,6 +128,7 @@ class Simulation:
             return self._state
 
         resources = dict(self._state.resources)
+        project_states = self._advance_projects(resources)
         facility_states: dict[str, FacilityState] = {}
         for name, facility_state in self._state.facilities.items():
             facility = facility_state.facility
@@ -131,8 +145,48 @@ class Simulation:
             date=self._state.date + datetime.timedelta(days=1),
             resources=resources,
             facilities=facility_states,
+            projects=MappingProxyType(project_states),
             national_map=self._state.national_map,
             paused=False,
             speed=self._state.speed,
         )
         return self._state
+
+    def _advance_projects(self, resources: dict[str, float]) -> dict[str, ProjectState]:
+        project_states: dict[str, ProjectState] = {}
+        ordered_projects = sorted(
+            self._state.projects.values(),
+            key=lambda state: state.project.priority,
+            reverse=True,
+        )
+        for project_state in ordered_projects:
+            if project_state.stage == ProjectStage.COMMISSIONED:
+                project_states[project_state.project.name] = project_state
+                continue
+            costs = project_state.project.stage_costs[project_state.stage]
+            blocked_by = tuple(
+                resource
+                for resource, amount in costs.items()
+                if resources.get(resource, 0) < amount
+            )
+            if blocked_by:
+                project_states[project_state.project.name] = ProjectState(
+                    project=project_state.project,
+                    stage=project_state.stage,
+                    blocked_by=blocked_by,
+                )
+                continue
+            for resource, amount in costs.items():
+                resources[resource] = resources.get(resource, 0) - amount
+            stages = project_state.project.stages
+            stage_index = stages.index(project_state.stage)
+            next_stage = (
+                ProjectStage.COMMISSIONED
+                if stage_index == len(stages) - 1
+                else stages[stage_index + 1]
+            )
+            project_states[project_state.project.name] = ProjectState(
+                project=project_state.project,
+                stage=next_stage,
+            )
+        return project_states
