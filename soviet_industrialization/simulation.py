@@ -7,6 +7,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from .map import NationalMap, default_national_map
+from .network import InfrastructureRoute
 from .project import Project, ProjectStage, ProjectState
 
 
@@ -41,6 +42,7 @@ class SimulationState:
     resources: Mapping[str, float]
     facilities: Mapping[str, FacilityState]
     projects: Mapping[str, ProjectState]
+    routes: Mapping[str, InfrastructureRoute]
     national_map: NationalMap
     paused: bool = False
     speed: SimulationSpeed = SimulationSpeed.NORMAL
@@ -55,6 +57,7 @@ class Simulation:
         resources: Mapping[str, float],
         facilities: tuple[Facility, ...] = (),
         projects: tuple[Project, ...] = (),
+        routes: tuple[InfrastructureRoute, ...] = (),
         national_map: NationalMap | None = None,
     ) -> None:
         facility_states = {
@@ -67,11 +70,15 @@ class Simulation:
         }
         if len(project_states) != len(projects):
             raise ValueError("project names must be unique")
+        route_states = {route.route_id: route for route in routes}
+        if len(route_states) != len(routes):
+            raise ValueError("route endpoints must be unique")
         self._state = SimulationState(
             date=start_date,
             resources=MappingProxyType(dict(resources)),
             facilities=MappingProxyType(facility_states),
             projects=MappingProxyType(project_states),
+            routes=MappingProxyType(route_states),
             national_map=national_map or default_national_map(),
         )
 
@@ -85,6 +92,7 @@ class Simulation:
             resources=self._state.resources,
             facilities=self._state.facilities,
             projects=self._state.projects,
+            routes=self._state.routes,
             national_map=self._state.national_map,
             paused=True,
             speed=self._state.speed,
@@ -96,6 +104,7 @@ class Simulation:
             resources=self._state.resources,
             facilities=self._state.facilities,
             projects=self._state.projects,
+            routes=self._state.routes,
             national_map=self._state.national_map,
             paused=False,
             speed=self._state.speed,
@@ -108,6 +117,7 @@ class Simulation:
                 resources=self._state.resources,
                 facilities=self._state.facilities,
                 projects=self._state.projects,
+                routes=self._state.routes,
                 national_map=self._state.national_map,
                 paused=True,
                 speed=speed,
@@ -118,6 +128,7 @@ class Simulation:
             resources=self._state.resources,
             facilities=self._state.facilities,
             projects=self._state.projects,
+            routes=self._state.routes,
             national_map=self._state.national_map,
             paused=False,
             speed=speed,
@@ -146,6 +157,7 @@ class Simulation:
             resources=resources,
             facilities=facility_states,
             projects=MappingProxyType(project_states),
+            routes=self._state.routes,
             national_map=self._state.national_map,
             paused=False,
             speed=self._state.speed,
