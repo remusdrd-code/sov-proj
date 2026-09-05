@@ -2,6 +2,7 @@ import datetime
 import unittest
 from typing import MutableMapping, cast
 
+from soviet_industrialization.automation import AutomationSystem
 from soviet_industrialization.project import Project, ProjectStage
 from soviet_industrialization.simulation import Facility, Simulation, SimulationSpeed
 
@@ -98,6 +99,77 @@ class SimulationTests(unittest.TestCase):
 
         with self.assertRaises(TypeError):
             cast(MutableMapping[str, float], simulation.state.resources)["coal"] = 0
+
+    def test_industry_automation_off_queues_idle_facility_work(self) -> None:
+        simulation = self.make_simulation()
+        simulation.set_automation(AutomationSystem.INDUSTRY, False)
+
+        state = simulation.tick()
+
+        self.assertEqual(state.resources["coal"], 4)
+        self.assertEqual(state.facilities["Moscow steel works"].daily_output, 0)
+        self.assertEqual(state.action_queue[0].system, AutomationSystem.INDUSTRY)
+
+    def test_manual_order_overrides_switch_until_revoked(self) -> None:
+        simulation = self.make_simulation()
+        simulation.set_automation(AutomationSystem.INDUSTRY, False)
+        order = simulation.issue_manual_order(
+            AutomationSystem.INDUSTRY, "Moscow steel works", "operate"
+        )
+
+        first = simulation.tick()
+        second = simulation.tick()
+        self.assertEqual(first.resources["steel"], 1)
+        self.assertEqual(second.resources["steel"], 2)
+
+        simulation.revoke_manual_order(order.order_id)
+        stopped = simulation.tick()
+        self.assertEqual(stopped.resources["steel"], 2)
+        self.assertTrue(stopped.action_queue)
+
+    def test_global_automation_switch_overrides_individual_switches(self) -> None:
+        simulation = self.make_simulation()
+        simulation.set_global_automation(False)
+
+        state = simulation.tick()
+
+        self.assertEqual(state.resources["coal"], 4)
+        self.assertEqual(len(state.action_queue), 1)
+
+    def test_all_automation_systems_have_independent_switches(self) -> None:
+        simulation = self.make_simulation()
+
+        self.assertEqual(set(simulation.state.automation), set(AutomationSystem))
+        simulation.set_automation(AutomationSystem.IMPORTS, False)
+
+        self.assertFalse(simulation.state.automation[AutomationSystem.IMPORTS])
+        self.assertTrue(simulation.state.automation[AutomationSystem.INDUSTRY])
+
+    def test_project_automation_off_queues_work_and_manual_order_resumes_it(self) -> None:
+        project = Project(
+            name="Moscow machine works",
+            region="Moscow",
+            nameplate_capacity=10,
+            stage_costs=self.lifecycle_costs("equipment"),
+        )
+        simulation = Simulation(
+            start_date=datetime.date(1928, 1, 1),
+            resources={"survey": 1, "design": 1, "construction_materials": 2},
+            projects=(project,),
+        )
+        simulation.set_automation(AutomationSystem.BUILDING, False)
+
+        idle = simulation.tick()
+
+        self.assertEqual(idle.projects[project.name].stage, ProjectStage.SURVEY)
+        self.assertEqual(idle.action_queue[0].target, project.name)
+        order = simulation.issue_manual_order(
+            AutomationSystem.BUILDING, project.name, "advance"
+        )
+        resumed = simulation.tick()
+
+        self.assertEqual(resumed.projects[project.name].stage, ProjectStage.DESIGN)
+        self.assertIn(order.order_id, resumed.manual_orders)
 
     def test_project_progresses_through_gates_to_commissioning(self) -> None:
         project = Project(

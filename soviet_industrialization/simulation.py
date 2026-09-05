@@ -6,6 +6,12 @@ from enum import IntEnum
 from types import MappingProxyType
 from typing import Mapping
 
+from .automation import (
+    ActionQueueItem,
+    AutomationSystem,
+    ManualOrder,
+    default_automation_switches,
+)
 from .map import NationalMap, default_national_map
 from .network import InfrastructureRoute
 from .project import Project, ProjectStage, ProjectState
@@ -46,6 +52,10 @@ class SimulationState:
     national_map: NationalMap
     paused: bool = False
     speed: SimulationSpeed = SimulationSpeed.NORMAL
+    automation: Mapping[AutomationSystem, bool] = default_automation_switches()
+    global_automation: bool = True
+    manual_orders: Mapping[str, ManualOrder] = MappingProxyType({})
+    action_queue: tuple[ActionQueueItem, ...] = ()
 
 
 class Simulation:
@@ -99,7 +109,43 @@ class Simulation:
             national_map=self._state.national_map,
             paused=self._state.paused,
             speed=self._state.speed,
+            automation=self._state.automation,
+            global_automation=self._state.global_automation,
+            manual_orders=self._state.manual_orders,
+            action_queue=self._state.action_queue,
         )
+
+    def set_automation(self, system: AutomationSystem, enabled: bool) -> None:
+        automation = dict(self._state.automation)
+        automation[system] = enabled
+        self._replace_automation_state(automation=automation)
+
+    def set_global_automation(self, enabled: bool) -> None:
+        self._replace_automation_state(global_automation=enabled)
+
+    def issue_manual_order(
+        self,
+        system: AutomationSystem,
+        target: str,
+        action: str,
+        order_id: str | None = None,
+    ) -> ManualOrder:
+        resolved_id = order_id or f"{system.value}:{target}:{action}"
+        order = ManualOrder(
+            order_id=resolved_id,
+            system=system,
+            target=target,
+            action=action,
+        )
+        orders = dict(self._state.manual_orders)
+        orders[resolved_id] = order
+        self._replace_automation_state(manual_orders=orders)
+        return order
+
+    def revoke_manual_order(self, order_id: str) -> None:
+        orders = dict(self._state.manual_orders)
+        orders.pop(order_id, None)
+        self._replace_automation_state(manual_orders=orders)
 
     def pause(self) -> None:
         self._state = SimulationState(
@@ -111,6 +157,10 @@ class Simulation:
             national_map=self._state.national_map,
             paused=True,
             speed=self._state.speed,
+            automation=self._state.automation,
+            global_automation=self._state.global_automation,
+            manual_orders=self._state.manual_orders,
+            action_queue=self._state.action_queue,
         )
 
     def resume(self) -> None:
@@ -123,6 +173,10 @@ class Simulation:
             national_map=self._state.national_map,
             paused=False,
             speed=self._state.speed,
+            automation=self._state.automation,
+            global_automation=self._state.global_automation,
+            manual_orders=self._state.manual_orders,
+            action_queue=self._state.action_queue,
         )
 
     def set_speed(self, speed: SimulationSpeed) -> None:
@@ -136,6 +190,10 @@ class Simulation:
                 national_map=self._state.national_map,
                 paused=True,
                 speed=speed,
+                automation=self._state.automation,
+                global_automation=self._state.global_automation,
+                manual_orders=self._state.manual_orders,
+                action_queue=self._state.action_queue,
             )
             return
         self._state = SimulationState(
@@ -147,6 +205,10 @@ class Simulation:
             national_map=self._state.national_map,
             paused=False,
             speed=speed,
+            automation=self._state.automation,
+            global_automation=self._state.global_automation,
+            manual_orders=self._state.manual_orders,
+            action_queue=self._state.action_queue,
         )
 
     def tick(self) -> SimulationState:
@@ -159,6 +221,9 @@ class Simulation:
         facility_states: dict[str, FacilityState] = {}
         for name, facility_state in self._state.facilities.items():
             facility = facility_state.facility
+            if not self._automated(AutomationSystem.INDUSTRY, name):
+                facility_states[name] = FacilityState(facility=facility)
+                continue
             available_input = max(0, resources.get(facility.input_resource, 0))
             input_used = min(available_input, facility.input_per_day)
             output = facility.output_per_day * input_used / facility.input_per_day
@@ -177,8 +242,92 @@ class Simulation:
             national_map=self._state.national_map,
             paused=False,
             speed=self._state.speed,
+            automation=self._state.automation,
+            global_automation=self._state.global_automation,
+            manual_orders=self._state.manual_orders,
+            action_queue=self._build_action_queue(project_states),
         )
         return self._state
+
+    def _replace_automation_state(
+        self,
+        *,
+        automation: Mapping[AutomationSystem, bool] | None = None,
+        global_automation: bool | None = None,
+        manual_orders: Mapping[str, ManualOrder] | None = None,
+    ) -> None:
+        self._state = SimulationState(
+            date=self._state.date,
+            resources=self._state.resources,
+            facilities=self._state.facilities,
+            projects=self._state.projects,
+            routes=self._state.routes,
+            national_map=self._state.national_map,
+            paused=self._state.paused,
+            speed=self._state.speed,
+            automation=MappingProxyType(
+                dict(
+                    self._state.automation
+                    if automation is None
+                    else automation
+                )
+            ),
+            global_automation=(
+                self._state.global_automation
+                if global_automation is None
+                else global_automation
+            ),
+            manual_orders=MappingProxyType(
+                dict(
+                    self._state.manual_orders
+                    if manual_orders is None
+                    else manual_orders
+                )
+            ),
+            action_queue=self._build_action_queue(self._state.projects),
+        )
+
+    def _automated(
+        self, system: AutomationSystem, target: str | None = None
+    ) -> bool:
+        if target is not None and any(
+            order.system == system and order.target == target
+            for order in self._state.manual_orders.values()
+        ):
+            return True
+        return self._state.global_automation and self._state.automation[system]
+
+    def _build_action_queue(
+        self, project_states: Mapping[str, ProjectState]
+    ) -> tuple[ActionQueueItem, ...]:
+        queue: list[ActionQueueItem] = []
+        for name in self._state.facilities:
+            if not self._automated(AutomationSystem.INDUSTRY, name):
+                queue.append(
+                    ActionQueueItem(
+                        order_id=f"industry:{name}:operate",
+                        system=AutomationSystem.INDUSTRY,
+                        target=name,
+                        action="operate",
+                    )
+                )
+        for name, project_state in project_states.items():
+            if project_state.stage == ProjectStage.COMMISSIONED:
+                continue
+            for system, action in (
+                (AutomationSystem.BUILDING, "advance"),
+                (AutomationSystem.PROJECT_SEQUENCING, "sequence"),
+            ):
+                if not self._automated(system, name):
+                    queue.append(
+                        ActionQueueItem(
+                            order_id=f"{system.value}:{name}:{action}",
+                            system=system,
+                            target=name,
+                            action=action,
+                        )
+                    )
+        return tuple(queue)
 
     def _advance_projects(self, resources: dict[str, float]) -> dict[str, ProjectState]:
         project_states: dict[str, ProjectState] = {}
@@ -189,6 +338,14 @@ class Simulation:
         )
         for project_state in ordered_projects:
             if project_state.stage == ProjectStage.COMMISSIONED:
+                project_states[project_state.project.name] = project_state
+                continue
+            if not (
+                self._automated(AutomationSystem.BUILDING, project_state.project.name)
+                and self._automated(
+                    AutomationSystem.PROJECT_SEQUENCING, project_state.project.name
+                )
+            ):
                 project_states[project_state.project.name] = project_state
                 continue
             costs = project_state.project.stage_costs[project_state.stage]
@@ -227,6 +384,9 @@ class Simulation:
         operated: dict[str, ProjectState] = {}
         for name, project_state in project_states.items():
             if project_state.stage != ProjectStage.COMMISSIONED:
+                operated[name] = project_state
+                continue
+            if not self._automated(AutomationSystem.INDUSTRY, name):
                 operated[name] = project_state
                 continue
             operating_inputs = project_state.project.operating_inputs
