@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum
 from types import MappingProxyType
 from typing import Mapping
@@ -15,12 +15,22 @@ from .automation import (
 from .map import NationalMap, default_national_map
 from .network import InfrastructureRoute
 from .project import Project, ProjectStage, ProjectState
+from .reports import (
+    AnalyticalReport,
+    ControlFigureComparison,
+    build_report,
+    compare_control_figures,
+)
 
 
 class SimulationSpeed(IntEnum):
     NORMAL = 1
     FAST = 2
     VERY_FAST = 4
+
+
+def _is_quarter_start(date: datetime.date) -> bool:
+    return date.day == 1 and date.month in (1, 4, 7, 10)
 
 
 @dataclass(frozen=True)
@@ -56,6 +66,7 @@ class SimulationState:
     global_automation: bool = True
     manual_orders: Mapping[str, ManualOrder] = MappingProxyType({})
     action_queue: tuple[ActionQueueItem, ...] = ()
+    reports: tuple[AnalyticalReport, ...] = ()
 
 
 class Simulation:
@@ -113,7 +124,21 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
+            reports=self._state.reports,
         )
+
+    def request_report(self) -> AnalyticalReport:
+        report = build_report(self._state)
+        self._state = replace(
+            self._state,
+            reports=self._state.reports + (report,),
+        )
+        return report
+
+    def compare_to_1932_control_figures(
+        self, control_figures: Mapping[str, float]
+    ) -> ControlFigureComparison:
+        return compare_control_figures(build_report(self._state), control_figures)
 
     def set_automation(self, system: AutomationSystem, enabled: bool) -> None:
         automation = dict(self._state.automation)
@@ -161,6 +186,7 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
+            reports=self._state.reports,
         )
 
     def resume(self) -> None:
@@ -177,6 +203,7 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
+            reports=self._state.reports,
         )
 
     def set_speed(self, speed: SimulationSpeed) -> None:
@@ -194,6 +221,7 @@ class Simulation:
                 global_automation=self._state.global_automation,
                 manual_orders=self._state.manual_orders,
                 action_queue=self._state.action_queue,
+                reports=self._state.reports,
             )
             return
         self._state = SimulationState(
@@ -209,6 +237,7 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
+            reports=self._state.reports,
         )
 
     def tick(self) -> SimulationState:
@@ -233,7 +262,7 @@ class Simulation:
             )
             facility_states[name] = FacilityState(facility=facility, daily_output=output)
 
-        self._state = SimulationState(
+        next_state = SimulationState(
             date=self._state.date + datetime.timedelta(days=1),
             resources=resources,
             facilities=facility_states,
@@ -246,7 +275,14 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._build_action_queue(project_states),
+            reports=self._state.reports,
         )
+        if _is_quarter_start(next_state.date):
+            next_state = replace(
+                next_state,
+                reports=next_state.reports + (build_report(next_state),),
+            )
+        self._state = next_state
         return self._state
 
     def _replace_automation_state(
@@ -285,6 +321,7 @@ class Simulation:
                 )
             ),
             action_queue=self._build_action_queue(self._state.projects),
+            reports=self._state.reports,
         )
 
     def _automated(
