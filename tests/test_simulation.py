@@ -2,7 +2,7 @@ import datetime
 import unittest
 from typing import MutableMapping, cast
 
-from soviet_industrialization.automation import AutomationSystem
+from soviet_industrialization.automation import AutomationSystem, DecisionSeverity
 from soviet_industrialization.network import (
     InfrastructureRoute,
     InfrastructureType,
@@ -206,6 +206,47 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(state.resources["coal"], 4)
         self.assertEqual(state.facilities["Moscow steel works"].daily_output, 0)
         self.assertEqual(state.action_queue[0].system, AutomationSystem.INDUSTRY)
+        self.assertEqual(state.action_queue[0].severity, DecisionSeverity.WARNING)
+        self.assertTrue(state.paused)
+
+    def test_resource_shortage_is_a_notice_without_autopause(self) -> None:
+        simulation = Simulation(
+            start_date=datetime.date(1928, 1, 1),
+            resources={"coal": 0},
+            facilities=(
+                Facility(
+                    name="Moscow steel works",
+                    input_resource="coal",
+                    input_per_day=2,
+                    output_resource="steel",
+                    output_per_day=1,
+                ),
+            ),
+        )
+
+        state = simulation.tick()
+
+        self.assertEqual(state.date, datetime.date(1928, 1, 2))
+        self.assertFalse(state.paused)
+        self.assertEqual(state.action_queue[0].severity, DecisionSeverity.NOTICE)
+
+    def test_decision_can_be_dismissed_or_delegated(self) -> None:
+        simulation = self.make_simulation()
+        simulation.set_automation(AutomationSystem.INDUSTRY, False)
+        decision_id = simulation.tick().action_queue[0].order_id
+
+        simulation.dismiss_decision(decision_id)
+        self.assertFalse(simulation.state.action_queue)
+
+        delegated_simulation = self.make_simulation()
+        delegated_simulation.set_automation(AutomationSystem.INDUSTRY, False)
+        decision_id = delegated_simulation.tick().action_queue[0].order_id
+        delegated_simulation.set_global_automation(False)
+        delegated_simulation.resolve_decision(decision_id, "delegate")
+        self.assertTrue(
+            delegated_simulation.state.automation[AutomationSystem.INDUSTRY]
+        )
+        self.assertFalse(delegated_simulation.state.action_queue)
 
     def test_manual_order_overrides_switch_until_revoked(self) -> None:
         simulation = self.make_simulation()
@@ -637,6 +678,52 @@ class FractionalOperationTests(unittest.TestCase):
         recovered = simulation.state.projects["Donbas coke works"]
         self.assertEqual(recovered.maintenance_deficit_days, 4)
         self.assertEqual(recovered.commissioned_capacity, 90)
+
+    def test_critical_maintenance_risk_pauses_until_explicit_resume(self) -> None:
+        simulation = self.make_commissioned_simulation(self.operating_resources(10))
+        self.commission(simulation)
+        simulation.add_resources({"maintenance": -2})
+
+        for _ in range(6):
+            simulation.tick()
+            simulation.add_resources(
+                {
+                    "fuel": 10,
+                    "freight": 5,
+                    "materials": 5,
+                    "services": 1,
+                    "power": 4,
+                    "labor": 3,
+                }
+            )
+
+        decision = next(
+            item
+            for item in simulation.state.action_queue
+            if item.severity == DecisionSeverity.CRITICAL
+        )
+        paused_date = simulation.state.date
+        self.assertTrue(simulation.state.paused)
+        self.assertEqual(decision.affected_projects, ("Donbas coke works",))
+        self.assertIn("commissioned capacity degradation", decision.cost_of_waiting)
+
+        simulation.resolve_decision(decision.order_id, "supply_maintenance")
+        self.assertTrue(simulation.state.paused)
+        self.assertEqual(simulation.state.date, paused_date)
+        self.assertEqual(
+            simulation.state.manual_orders[decision.order_id].action,
+            "supply_maintenance",
+        )
+        simulation.issue_manual_order(
+            AutomationSystem.MAINTENANCE,
+            "Donbas coke works",
+            "supply_maintenance",
+        )
+        self.assertTrue(simulation.state.paused)
+
+        simulation.add_resources({"maintenance": 10})
+        simulation.resume()
+        self.assertGreater(simulation.tick().date, paused_date)
 
     def test_uncommissioned_project_has_no_operating_output(self) -> None:
         simulation = self.make_commissioned_simulation(self.operating_resources(10))

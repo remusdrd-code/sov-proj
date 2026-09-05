@@ -17,6 +17,12 @@ class AutomationSystem(StrEnum):
     PROJECT_SEQUENCING = "project_sequencing"
 
 
+class DecisionSeverity(StrEnum):
+    NOTICE = "notice"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
 @dataclass(frozen=True)
 class ManualOrder:
     order_id: str
@@ -31,6 +37,12 @@ class ActionQueueItem:
     system: AutomationSystem
     target: str
     action: str
+    severity: DecisionSeverity = DecisionSeverity.NOTICE
+    affected_systems: tuple[AutomationSystem, ...] = ()
+    affected_projects: tuple[str, ...] = ()
+    cost_of_waiting: str = ""
+    available_actions: tuple[str, ...] = ()
+    recommended_action: str = ""
 
 
 def default_automation_switches() -> Mapping[AutomationSystem, bool]:

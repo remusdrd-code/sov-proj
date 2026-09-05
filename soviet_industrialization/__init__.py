@@ -1,6 +1,6 @@
 """Domain model for the Soviet industrialization sandbox."""
 
-from .automation import ActionQueueItem, AutomationSystem, ManualOrder
+from .automation import ActionQueueItem, AutomationSystem, DecisionSeverity, ManualOrder
 from .map import NationalMap, Region, default_national_map
 from .network import InfrastructureRoute, InfrastructureType, MapNode, RoutePlanner, Terrain
 from .project import Project, ProjectStage, ProjectState
@@ -14,6 +14,7 @@ __all__ = [
     "AnalyticalReport",
     "AutomationSystem",
     "ControlFigureComparison",
+    "DecisionSeverity",
     "NationalMap",
     "InfrastructureRoute",
     "InfrastructureType",

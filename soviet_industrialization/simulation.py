@@ -9,6 +9,7 @@ from typing import Mapping
 from .automation import (
     ActionQueueItem,
     AutomationSystem,
+    DecisionSeverity,
     ManualOrder,
     default_automation_switches,
 )
@@ -66,6 +67,9 @@ class SimulationState:
     global_automation: bool = True
     manual_orders: Mapping[str, ManualOrder] = MappingProxyType({})
     action_queue: tuple[ActionQueueItem, ...] = ()
+    suppressed_decisions: frozenset[str] = frozenset()
+    delegated_automation: frozenset[AutomationSystem] = frozenset()
+    critical_pause_latched: bool = False
     reports: tuple[AnalyticalReport, ...] = ()
     technical_knowledge: Mapping[str, float] = MappingProxyType({})
     supply_chains: tuple[str, ...] = ()
@@ -130,6 +134,9 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
+            suppressed_decisions=self._state.suppressed_decisions,
+            delegated_automation=self._state.delegated_automation,
+            critical_pause_latched=self._state.critical_pause_latched,
             reports=self._state.reports,
             technical_knowledge=self._state.technical_knowledge,
             supply_chains=self._state.supply_chains,
@@ -214,12 +221,63 @@ class Simulation:
         orders = dict(self._state.manual_orders)
         orders[resolved_id] = order
         self._replace_automation_state(manual_orders=orders)
+        if not self._state.critical_pause_latched:
+            self._state = replace(self._state, paused=False)
         return order
 
     def revoke_manual_order(self, order_id: str) -> None:
         orders = dict(self._state.manual_orders)
         orders.pop(order_id, None)
         self._replace_automation_state(manual_orders=orders)
+
+    def resolve_decision(self, decision_id: str, action: str | None = None) -> None:
+        decision = self._find_decision(decision_id)
+        chosen_action = action or decision.recommended_action or decision.action
+        if chosen_action not in decision.available_actions and chosen_action != decision.action:
+            raise ValueError(f"action {chosen_action!r} is unavailable for {decision_id}")
+        if chosen_action == "delegate":
+            self.delegate_decision(decision_id)
+            return
+        manual_orders = dict(self._state.manual_orders)
+        if chosen_action not in ("dismiss", "delegate"):
+            manual_orders[decision.order_id] = ManualOrder(
+                order_id=decision.order_id,
+                system=decision.system,
+                target=decision.target,
+                action=chosen_action,
+            )
+        self._state = replace(self._state, manual_orders=MappingProxyType(manual_orders))
+        self._finish_decision(decision)
+
+    def dismiss_decision(self, decision_id: str) -> None:
+        decision = self._find_decision(decision_id)
+        self._finish_decision(decision)
+
+    def delegate_decision(self, decision_id: str) -> None:
+        decision = self._find_decision(decision_id)
+        automation = dict(self._state.automation)
+        delegated = set(self._state.delegated_automation)
+        for system in decision.affected_systems or (decision.system,):
+            automation[system] = True
+            delegated.add(system)
+        self._state = replace(
+            self._state,
+            automation=MappingProxyType(automation),
+            delegated_automation=frozenset(delegated),
+        )
+        self._finish_decision(decision)
+
+    def _finish_decision(self, decision: ActionQueueItem) -> None:
+        self._state = replace(
+            self._state,
+            suppressed_decisions=self._state.suppressed_decisions | {decision.order_id},
+            paused=(
+                self._state.paused
+                if decision.severity == DecisionSeverity.CRITICAL
+                else False
+            ),
+        )
+        self._refresh_action_queue()
 
     def pause(self) -> None:
         self._state = SimulationState(
@@ -235,6 +293,9 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
+            suppressed_decisions=self._state.suppressed_decisions,
+            delegated_automation=self._state.delegated_automation,
+            critical_pause_latched=self._state.critical_pause_latched,
             reports=self._state.reports,
             technical_knowledge=self._state.technical_knowledge,
             supply_chains=self._state.supply_chains,
@@ -254,6 +315,9 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
+            suppressed_decisions=self._state.suppressed_decisions,
+            delegated_automation=self._state.delegated_automation,
+            critical_pause_latched=False,
             reports=self._state.reports,
             technical_knowledge=self._state.technical_knowledge,
             supply_chains=self._state.supply_chains,
@@ -274,6 +338,9 @@ class Simulation:
                 global_automation=self._state.global_automation,
                 manual_orders=self._state.manual_orders,
                 action_queue=self._state.action_queue,
+                suppressed_decisions=self._state.suppressed_decisions,
+                delegated_automation=self._state.delegated_automation,
+                critical_pause_latched=self._state.critical_pause_latched,
                 reports=self._state.reports,
                 technical_knowledge=self._state.technical_knowledge,
                 supply_chains=self._state.supply_chains,
@@ -292,6 +359,9 @@ class Simulation:
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
+            suppressed_decisions=self._state.suppressed_decisions,
+            delegated_automation=self._state.delegated_automation,
+            critical_pause_latched=self._state.critical_pause_latched,
             reports=self._state.reports,
             technical_knowledge=self._state.technical_knowledge,
             supply_chains=self._state.supply_chains,
@@ -319,6 +389,7 @@ class Simulation:
             )
             facility_states[name] = FacilityState(facility=facility, daily_output=output)
 
+        action_queue = self._build_action_queue(project_states, facility_states)
         next_state = SimulationState(
             date=self._state.date + datetime.timedelta(days=1),
             resources=resources,
@@ -326,12 +397,18 @@ class Simulation:
             projects=MappingProxyType(project_states),
             routes=self._state.routes,
             national_map=self._state.national_map,
-            paused=False,
+            paused=self._should_autopause(action_queue),
             speed=self._state.speed,
             automation=self._state.automation,
             global_automation=self._state.global_automation,
             manual_orders=self._state.manual_orders,
-            action_queue=self._build_action_queue(project_states),
+            action_queue=action_queue,
+            suppressed_decisions=self._state.suppressed_decisions,
+            delegated_automation=self._state.delegated_automation,
+            critical_pause_latched=(
+                self._state.critical_pause_latched
+                or any(item.severity == DecisionSeverity.CRITICAL for item in action_queue)
+            ),
             reports=self._state.reports,
             technical_knowledge=self._state.technical_knowledge,
             supply_chains=self._state.supply_chains,
@@ -380,6 +457,9 @@ class Simulation:
                 )
             ),
             action_queue=(),
+            suppressed_decisions=self._state.suppressed_decisions,
+            delegated_automation=self._state.delegated_automation,
+            critical_pause_latched=self._state.critical_pause_latched,
             reports=self._state.reports,
             technical_knowledge=self._state.technical_knowledge,
             supply_chains=self._state.supply_chains,
@@ -387,6 +467,30 @@ class Simulation:
         self._state = replace(
             self._state,
             action_queue=self._build_action_queue(self._state.projects),
+        )
+
+    def _refresh_action_queue(self) -> None:
+        self._state = replace(
+            self._state,
+            action_queue=self._build_action_queue(self._state.projects),
+        )
+
+    def _find_decision(self, decision_id: str) -> ActionQueueItem:
+        try:
+            return next(
+                item for item in self._state.action_queue if item.order_id == decision_id
+            )
+        except StopIteration as error:
+            raise ValueError(f"unknown decision: {decision_id}") from error
+
+    def _should_autopause(self, action_queue: tuple[ActionQueueItem, ...]) -> bool:
+        return any(
+            item.severity == DecisionSeverity.CRITICAL
+            or (
+                item.severity == DecisionSeverity.WARNING
+                and not self._automated(item.system, item.target)
+            )
+            for item in action_queue
         )
 
     def _automated(
@@ -397,10 +501,14 @@ class Simulation:
             for order in self._state.manual_orders.values()
         ):
             return True
+        if system in self._state.delegated_automation:
+            return True
         return self._state.global_automation and self._state.automation[system]
 
     def _build_action_queue(
-        self, project_states: Mapping[str, ProjectState]
+        self,
+        project_states: Mapping[str, ProjectState],
+        facility_states: Mapping[str, FacilityState] | None = None,
     ) -> tuple[ActionQueueItem, ...]:
         queue: list[ActionQueueItem] = []
         for name in self._state.facilities:
@@ -411,10 +519,60 @@ class Simulation:
                         system=AutomationSystem.INDUSTRY,
                         target=name,
                         action="operate",
+                        severity=DecisionSeverity.WARNING,
+                        affected_systems=(AutomationSystem.INDUSTRY,),
+                        affected_projects=(name,),
+                        cost_of_waiting="one day of unattended industrial output",
+                        available_actions=("operate", "dismiss", "delegate"),
+                        recommended_action="operate",
                     )
                 )
+            elif facility_states is not None:
+                facility_state = facility_states[name]
+                if facility_state.daily_output < facility_state.facility.output_per_day:
+                    queue.append(
+                        ActionQueueItem(
+                            order_id=f"industry:{name}:shortage",
+                            system=AutomationSystem.INDUSTRY,
+                            target=name,
+                            action="review_inputs",
+                            severity=DecisionSeverity.NOTICE,
+                            affected_systems=(AutomationSystem.INDUSTRY,),
+                            affected_projects=(name,),
+                            cost_of_waiting="recoverable low utilization",
+                            available_actions=(
+                                "review_inputs",
+                                "dismiss",
+                                "delegate",
+                            ),
+                            recommended_action="review_inputs",
+                        )
+                    )
         for name, project_state in project_states.items():
             if project_state.stage == ProjectStage.COMMISSIONED:
+                if project_state.maintenance_deficit_days >= 6:
+                    queue.append(
+                        ActionQueueItem(
+                            order_id=f"maintenance:{name}:critical",
+                            system=AutomationSystem.MAINTENANCE,
+                            target=name,
+                            action="supply_maintenance",
+                            severity=DecisionSeverity.CRITICAL,
+                            affected_systems=(
+                                AutomationSystem.MAINTENANCE,
+                                AutomationSystem.INDUSTRY,
+                            ),
+                            affected_projects=(name,),
+                            cost_of_waiting="commissioned capacity degradation",
+                            available_actions=(
+                                "supply_maintenance",
+                                "reduce_operations",
+                                "dismiss",
+                                "delegate",
+                            ),
+                            recommended_action="supply_maintenance",
+                        )
+                    )
                 continue
             for system, action in (
                 (AutomationSystem.BUILDING, "advance"),
@@ -427,9 +585,36 @@ class Simulation:
                             system=system,
                             target=name,
                             action=action,
+                            severity=DecisionSeverity.WARNING,
+                            affected_systems=(system,),
+                            affected_projects=(name,),
+                            cost_of_waiting="one day of project delay",
+                            available_actions=(action, "dismiss", "delegate"),
+                            recommended_action=action,
                         )
                     )
-        return tuple(queue)
+            if project_state.blocked_by:
+                queue.append(
+                    ActionQueueItem(
+                        order_id=f"project:{name}:blocked",
+                        system=AutomationSystem.PROJECT_SEQUENCING,
+                        target=name,
+                        action="review_blockers",
+                        severity=DecisionSeverity.NOTICE,
+                        affected_systems=(AutomationSystem.PROJECT_SEQUENCING,),
+                        affected_projects=(name,),
+                        cost_of_waiting="project delay",
+                        available_actions=(
+                            "resolve_blockers",
+                            "dismiss",
+                            "delegate",
+                        ),
+                        recommended_action="resolve_blockers",
+                    )
+                )
+        return tuple(
+            item for item in queue if item.order_id not in self._state.suppressed_decisions
+        )
 
     def _advance_projects(self, resources: dict[str, float]) -> dict[str, ProjectState]:
         project_states: dict[str, ProjectState] = {}
