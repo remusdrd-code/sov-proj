@@ -121,19 +121,22 @@ def create_app(simulation: Simulation) -> FastAPI:
         """Map with current mode applied."""
         return templates.TemplateResponse(request, "partials/map.html", {})
 
-    @app.get("/api/survey", response_class=HTMLResponse)
-    def survey_region(region: str) -> HTMLResponse:
-        """Unlock a region east of the Urals by completing its survey project."""
-        # The actual survey logic is handled by the simulation; we just
-        # return a message about what would happen.
+    @app.post("/api/survey/{region}")
+    def survey_region(region: str) -> dict:
+        """Unlock a region east of the Urals by progressing its survey project.
+
+        Returns 501 if the simulation does not yet support region surveying.
+        """
         if region not in URALS_EAST:
             raise HTTPException(status_code=400, detail="Region does not need survey")
-        # The simulation layer handles creating the survey project and
-        # progressing it. We return a confirmation message.
-        return HTMLResponse(
-            f"<p>Survey for {region} initiated. "
-            f"Create a survey project in the simulation to unlock this territory.</p>"
-        )
+        sim = endpoint.simulation
+        if not hasattr(sim, "survey_region"):
+            raise HTTPException(
+                status_code=501,
+                detail="Simulation does not support region surveying yet",
+            )
+        sim.survey_region(region)
+        return {"ok": True, "region": region}
 
     # -------------------------------------------------------------------------
     # Control actions (POST)
@@ -151,10 +154,11 @@ def create_app(simulation: Simulation) -> FastAPI:
 
     @app.post("/api/control/speed")
     def control_speed(speed: int) -> dict:
-        valid = {1: SimulationSpeed.NORMAL, 2: SimulationSpeed.FAST, 4: SimulationSpeed.VERY_FAST}
-        if speed not in valid:
+        try:
+            sim_speed = SimulationSpeed(speed)
+        except ValueError:
             raise HTTPException(status_code=400, detail="Invalid speed value")
-        endpoint.simulation.set_speed(valid[speed])
+        endpoint.simulation.set_speed(sim_speed)
         return {"ok": True, "speed": speed}
 
     @app.post("/api/control/tick")
@@ -187,32 +191,26 @@ def create_app(simulation: Simulation) -> FastAPI:
     # Focus item (click on map element focuses dashboard item)
     # -------------------------------------------------------------------------
 
+    # Registry map: focus_type → (state key, id field name, template name)
+    _FOCUS_REGISTRY: dict[str, tuple[str, str, str]] = {
+        "project": ("projects", "name", "partials/focused_project.html"),
+        "region": ("map_regions", "name", "partials/focused_region.html"),
+        "alert": ("alerts", "id", "partials/focused_alert.html"),
+        "route": ("routes", "id", "partials/focused_route.html"),
+        "facility": ("facilities", "name", "partials/focused_facility.html"),
+    }
+
     @app.get("/partials/focused/{focus_type}/{focus_id}")
     def partial_focused(request: Request, focus_type: str, focus_id: str) -> HTMLResponse:
-        """Return a focused view of a specific item (project, region, route, alert)."""
+        """Return a focused view of a specific item (project, region, route, facility, alert)."""
+        if focus_type not in _FOCUS_REGISTRY:
+            raise HTTPException(status_code=404, detail="Item not found")
+        state_key, id_field, template = _FOCUS_REGISTRY[focus_type]
         state = endpoint.to_json()
-        if focus_type == "project":
-            projects = [p for p in state["projects"] if p["name"] == focus_id]
-            if projects:
-                return templates.TemplateResponse(
-                    request, "partials/focused_project.html",
-                    {"project": projects[0]},
-                )
-        elif focus_type == "region":
-            regions = [r for r in state["map_regions"] if r["name"] == focus_id]
-            if regions:
-                return templates.TemplateResponse(
-                    request, "partials/focused_region.html",
-                    {"region": regions[0]},
-                )
-        elif focus_type == "alert":
-            alerts = [a for a in state["alerts"] if a["id"] == focus_id]
-            if alerts:
-                return templates.TemplateResponse(
-                    request, "partials/focused_alert.html",
-                    {"alert": alerts[0]},
-                )
-        raise HTTPException(status_code=404, detail="Item not found")
+        items = [item for item in state[state_key] if item[id_field] == focus_id]
+        if not items:
+            raise HTTPException(status_code=404, detail="Item not found")
+        return templates.TemplateResponse(request, template, {focus_type: items[0]})
 
     return app
 

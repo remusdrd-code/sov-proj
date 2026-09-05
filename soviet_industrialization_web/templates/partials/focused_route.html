@@ -1,0 +1,10 @@
+<div class="focus-section">
+  <h3>Route</h3>
+  <div class="item-name" style="font-weight:bold;margin-bottom:0.3rem">{{ route.id }}</div>
+  <div style="font-size:0.78rem">
+    <div><strong>Start:</strong> {{ route.start or '—' }}</div>
+    <div><strong>End:</strong> {{ route.end or '—' }}</div>
+    <div><strong>Type:</strong> {{ route.infrastructure_type or '—' }}</div>
+    <div><strong>Distance:</strong> {{ route.distance }} km</div>
+  </div>
+</div>

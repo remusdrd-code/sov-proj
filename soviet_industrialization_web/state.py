@@ -157,8 +157,8 @@ def _sim_state_to_json(state: SimulationState) -> dict[str, Any]:
         "facilities": facilities,
         "projects": projects,
         "alerts": [
-            {"id": a.id, "severity": a.severity, "message": a.message, "source": a.source,
-             "project_name": a.project_name, "region": a.region}
+            # Use __dict__ since DashboardAlert is a dataclass with exactly these fields
+            a.__dict__
             for a in alerts
         ],
         "queue": queue,

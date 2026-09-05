@@ -285,9 +285,20 @@
       }
 
       // Draw routes
+      const routeLineStyle = {
+        color: colors.stroke,
+        weight: currentMapMode === 'network' ? 3 : 1.5,
+        dashArray: currentMapMode === 'network' ? null : '6, 4',
+        opacity: currentMapMode === 'network' ? 0.9 : 0.6,
+      };
       for (const route of state.routes) {
-        // Routes are drawn as conceptual lines - simplified as straight lines
-        // between known region positions
+        // Skip routes with unknown endpoints
+        if (!route.start || !route.end) continue;
+        const startRegion = regionMarkers[route.start];
+        const endRegion = regionMarkers[route.end];
+        if (!startRegion || !endRegion) continue;
+        const latlngs = [startRegion.getLatLng(), endRegion.getLatLng()];
+        L.polyline(latlngs, routeLineStyle).addTo(map);
       }
     }
 

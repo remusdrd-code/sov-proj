@@ -321,13 +321,14 @@ class FastAPIAppTests(unittest.TestCase):
                 self.assertEqual(resp.status_code, 200)
         self._async_test(_)
 
-    def test_survey_east_region_returns_message(self) -> None:
+    def test_survey_east_region_returns_501(self) -> None:
+        """Survey endpoint returns 501 Not Implemented since sim lacks survey_region."""
         from httpx import ASGITransport, AsyncClient
         async def _():
             transport = ASGITransport(app=self.app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.get("/api/survey?region=Far+East")
-                self.assertEqual(resp.status_code, 200)
+                resp = await client.post("/api/survey/Far%20East")
+                self.assertEqual(resp.status_code, 501)
         self._async_test(_)
 
     def test_focused_project_not_found(self) -> None:
