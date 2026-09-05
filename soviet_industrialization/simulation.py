@@ -67,6 +67,8 @@ class SimulationState:
     manual_orders: Mapping[str, ManualOrder] = MappingProxyType({})
     action_queue: tuple[ActionQueueItem, ...] = ()
     reports: tuple[AnalyticalReport, ...] = ()
+    technical_knowledge: Mapping[str, float] = MappingProxyType({})
+    supply_chains: tuple[str, ...] = ()
 
 
 class Simulation:
@@ -80,6 +82,8 @@ class Simulation:
         projects: tuple[Project, ...] = (),
         routes: tuple[InfrastructureRoute, ...] = (),
         national_map: NationalMap | None = None,
+        technical_knowledge: Mapping[str, float] | None = None,
+        supply_chains: tuple[str, ...] = (),
     ) -> None:
         facility_states = {
             facility.name: FacilityState(facility=facility) for facility in facilities
@@ -101,6 +105,8 @@ class Simulation:
             projects=MappingProxyType(project_states),
             routes=MappingProxyType(route_states),
             national_map=national_map or default_national_map(),
+            technical_knowledge=MappingProxyType(dict(technical_knowledge or {})),
+            supply_chains=tuple(supply_chains),
         )
 
     @property
@@ -125,7 +131,50 @@ class Simulation:
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
             reports=self._state.reports,
+            technical_knowledge=self._state.technical_knowledge,
+            supply_chains=self._state.supply_chains,
         )
+
+    def add_project(self, project: Project) -> None:
+        if project.name in self._state.projects:
+            raise ValueError("project names must be unique")
+        projects = dict(self._state.projects)
+        projects[project.name] = ProjectState.planned_for(project)
+        self._state = replace(
+            self._state,
+            projects=MappingProxyType(projects),
+            action_queue=self._build_action_queue(projects),
+        )
+
+    def add_route(self, route: InfrastructureRoute) -> None:
+        if route.route_id in self._state.routes:
+            raise ValueError("route identifiers must be unique")
+        routes = dict(self._state.routes)
+        routes[route.route_id] = route
+        self._state = replace(self._state, routes=MappingProxyType(routes))
+
+    def add_technical_knowledge(self, name: str, amount: float = 1) -> None:
+        if not name or amount <= 0:
+            raise ValueError("technical knowledge additions must be positive and named")
+        knowledge = dict(self._state.technical_knowledge)
+        knowledge[name] = knowledge.get(name, 0) + amount
+        self._state = replace(
+            self._state,
+            technical_knowledge=MappingProxyType(knowledge),
+        )
+
+    def add_supply_chain(self, name: str) -> None:
+        if not name:
+            raise ValueError("supply chain name must not be empty")
+        if name in self._state.supply_chains:
+            return
+        self._state = replace(
+            self._state,
+            supply_chains=(*self._state.supply_chains, name),
+        )
+
+    def commission_supply_chain(self, name: str) -> None:
+        self.add_supply_chain(name)
 
     def request_report(self) -> AnalyticalReport:
         report = build_report(self._state)
@@ -187,6 +236,8 @@ class Simulation:
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
             reports=self._state.reports,
+            technical_knowledge=self._state.technical_knowledge,
+            supply_chains=self._state.supply_chains,
         )
 
     def resume(self) -> None:
@@ -204,6 +255,8 @@ class Simulation:
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
             reports=self._state.reports,
+            technical_knowledge=self._state.technical_knowledge,
+            supply_chains=self._state.supply_chains,
         )
 
     def set_speed(self, speed: SimulationSpeed) -> None:
@@ -222,6 +275,8 @@ class Simulation:
                 manual_orders=self._state.manual_orders,
                 action_queue=self._state.action_queue,
                 reports=self._state.reports,
+                technical_knowledge=self._state.technical_knowledge,
+                supply_chains=self._state.supply_chains,
             )
             return
         self._state = SimulationState(
@@ -238,6 +293,8 @@ class Simulation:
             manual_orders=self._state.manual_orders,
             action_queue=self._state.action_queue,
             reports=self._state.reports,
+            technical_knowledge=self._state.technical_knowledge,
+            supply_chains=self._state.supply_chains,
         )
 
     def tick(self) -> SimulationState:
@@ -276,6 +333,8 @@ class Simulation:
             manual_orders=self._state.manual_orders,
             action_queue=self._build_action_queue(project_states),
             reports=self._state.reports,
+            technical_knowledge=self._state.technical_knowledge,
+            supply_chains=self._state.supply_chains,
         )
         if _is_quarter_start(next_state.date):
             next_state = replace(
@@ -320,8 +379,14 @@ class Simulation:
                     else manual_orders
                 )
             ),
-            action_queue=self._build_action_queue(self._state.projects),
+            action_queue=(),
             reports=self._state.reports,
+            technical_knowledge=self._state.technical_knowledge,
+            supply_chains=self._state.supply_chains,
+        )
+        self._state = replace(
+            self._state,
+            action_queue=self._build_action_queue(self._state.projects),
         )
 
     def _automated(
@@ -377,6 +442,33 @@ class Simulation:
             if project_state.stage == ProjectStage.COMMISSIONED:
                 project_states[project_state.project.name] = project_state
                 continue
+            missing_enablers = tuple(
+                requirement
+                for requirement in (
+                    *project_state.project.required_knowledge,
+                    *project_state.project.required_infrastructure,
+                    *project_state.project.required_supply_chains,
+                )
+                if (
+                    requirement in project_state.project.required_knowledge
+                    and self._state.technical_knowledge.get(requirement, 0) <= 0
+                )
+                or (
+                    requirement in project_state.project.required_infrastructure
+                    and not self._infrastructure_available(requirement)
+                )
+                or (
+                    requirement in project_state.project.required_supply_chains
+                    and requirement not in self._state.supply_chains
+                )
+            )
+            if missing_enablers:
+                project_states[project_state.project.name] = ProjectState(
+                    project=project_state.project,
+                    stage=project_state.stage,
+                    blocked_by=missing_enablers,
+                )
+                continue
             if not (
                 self._automated(AutomationSystem.BUILDING, project_state.project.name)
                 and self._automated(
@@ -410,6 +502,7 @@ class Simulation:
             project_states[project_state.project.name] = ProjectState(
                 project=project_state.project,
                 stage=next_stage,
+                maintenance_deficit_days=project_state.maintenance_deficit_days,
             )
         return project_states
 
@@ -442,6 +535,13 @@ class Simulation:
                     min_share = share
             utilization = min(shares)
             output = project_state.commissioned_capacity * utilization
+            maintenance_required = operating_inputs.get("maintenance")
+            maintenance_deficit_days = project_state.maintenance_deficit_days
+            if maintenance_required is not None:
+                if resources.get("maintenance", 0) < maintenance_required:
+                    maintenance_deficit_days += 1
+                else:
+                    maintenance_deficit_days = max(0, maintenance_deficit_days - 1)
             for resource, required in operating_inputs.items():
                 resources[resource] = max(
                     0, resources.get(resource, 0) - required * utilization
@@ -452,5 +552,12 @@ class Simulation:
                 blocked_by=project_state.blocked_by,
                 operating_output=output,
                 binding_constraint=binding,
+                maintenance_deficit_days=maintenance_deficit_days,
             )
         return operated
+
+    def _infrastructure_available(self, identifier: str) -> bool:
+        return any(
+            route.route_id == identifier and route.commissioned
+            for route in self._state.routes.values()
+        )

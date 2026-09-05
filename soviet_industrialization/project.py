@@ -39,6 +39,10 @@ class Project:
     stage_costs: Mapping[ProjectStage, Mapping[str, float]]
     priority: int = 0
     operating_inputs: Mapping[str, float] | None = None
+    sector: str = "industry"
+    required_knowledge: tuple[str, ...] = ()
+    required_infrastructure: tuple[str, ...] = ()
+    required_supply_chains: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.nameplate_capacity <= 0:
@@ -48,6 +52,23 @@ class Project:
                 raise ValueError("operating inputs must not be empty when provided")
             if any(amount <= 0 for amount in self.operating_inputs.values()):
                 raise ValueError("operating input requirements must be positive")
+        if not self.sector:
+            raise ValueError("project sector must not be empty")
+        if self.sector != "industry" and not (
+            self.required_knowledge
+            and self.required_infrastructure
+            and self.required_supply_chains
+        ):
+            raise ValueError(
+                "later-sector projects require knowledge, infrastructure, "
+                "and supply-chain requirements"
+            )
+        if any(not requirement for requirement in (
+            *self.required_knowledge,
+            *self.required_infrastructure,
+            *self.required_supply_chains,
+        )):
+            raise ValueError("project enabling requirements must not be empty")
         missing_stages = set(CONSTRUCTION_STAGES) - set(self.stage_costs)
         if missing_stages:
             raise ValueError(f"project is missing stages: {missing_stages}")
@@ -71,6 +92,7 @@ class ProjectState:
     blocked_by: tuple[str, ...] = ()
     operating_output: float = 0
     binding_constraint: str | None = None
+    maintenance_deficit_days: int = 0
 
     @property
     def planned_capacity(self) -> float:
@@ -96,7 +118,8 @@ class ProjectState:
     @property
     def commissioned_capacity(self) -> float:
         if self.stage == ProjectStage.COMMISSIONED:
-            return self.project.nameplate_capacity
+            degradation = max(0, self.maintenance_deficit_days - 3) * 0.1
+            return self.project.nameplate_capacity * max(0, 1 - degradation)
         return 0
 
     @property

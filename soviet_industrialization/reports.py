@@ -76,27 +76,38 @@ def build_report(state: SimulationState) -> AnalyticalReport:
     rows: dict[tuple[str, str], SectorReport] = {}
     bottlenecks: set[str] = set()
     disorganization: list[str] = []
+    sector_disorganization: dict[tuple[str, str], list[str]] = {}
 
     project_groups: dict[tuple[str, str], list[object]] = {}
     for project_state in state.projects.values():
-        key = (project_state.project.region, "industry")
+        key = (project_state.project.region, project_state.project.sector)
         project_groups.setdefault(key, []).append(project_state)
+        sector_messages = sector_disorganization.setdefault(key, [])
         bottlenecks.update(project_state.blocked_by)
         if project_state.binding_constraint:
             bottlenecks.add(project_state.binding_constraint)
         if project_state.stage.value != "commissioned":
-            disorganization.append(
-                f"unfinished project: {project_state.project.name}"
-            )
+            message = f"unfinished project: {project_state.project.name}"
+            disorganization.append(message)
+            sector_messages.append(message)
         for resource in project_state.blocked_by:
-            disorganization.append(
-                f"project {project_state.project.name} blocked by {resource}"
-            )
+            message = f"project {project_state.project.name} blocked by {resource}"
+            disorganization.append(message)
+            sector_messages.append(message)
         if project_state.binding_constraint:
-            disorganization.append(
+            message = (
                 f"project {project_state.project.name} constrained by "
                 f"{project_state.binding_constraint}"
             )
+            disorganization.append(message)
+            sector_messages.append(message)
+        if project_state.maintenance_deficit_days:
+            message = (
+                f"project {project_state.project.name} has insufficient maintenance "
+                f"for {project_state.maintenance_deficit_days} days"
+            )
+            disorganization.append(message)
+            sector_messages.append(message)
 
     for key, project_states in project_groups.items():
         nameplate = sum(item.nameplate_capacity for item in project_states)
@@ -123,9 +134,7 @@ def build_report(state: SimulationState) -> AnalyticalReport:
                 )
             ),
             disorganization=tuple(
-                item_text
-                for item_text in disorganization
-                if key[0] in item_text
+                sector_disorganization.get(key, ())
             ),
         )
 

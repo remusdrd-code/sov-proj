@@ -3,6 +3,11 @@ import unittest
 from typing import MutableMapping, cast
 
 from soviet_industrialization.automation import AutomationSystem
+from soviet_industrialization.network import (
+    InfrastructureRoute,
+    InfrastructureType,
+    MapNode,
+)
 from soviet_industrialization.project import Project, ProjectStage
 from soviet_industrialization.simulation import Facility, Simulation, SimulationSpeed
 
@@ -93,6 +98,98 @@ class SimulationTests(unittest.TestCase):
         self.assertTrue(initial_map.region("Urals").developable)
         self.assertTrue(all(region.cities for region in initial_map.regions))
         self.assertEqual(state_after_tick.national_map, initial_map)
+
+    def test_later_sector_waits_for_explicit_enablers(self) -> None:
+        project = Project(
+            name="Urals chemical works",
+            region="Urals",
+            sector="chemicals",
+            nameplate_capacity=10,
+            stage_costs=self.lifecycle_costs("equipment"),
+            required_knowledge=("synthetic chemistry",),
+            required_infrastructure=("Urals power grid",),
+            required_supply_chains=("chemical feedstock",),
+        )
+        simulation = Simulation(
+            start_date=datetime.date(1941, 1, 1),
+            resources=self.lifecycle_resources("equipment"),
+            projects=(project,),
+        )
+
+        simulation.tick()
+
+        self.assertEqual(
+            simulation.state.projects[project.name].blocked_by,
+            ("synthetic chemistry", "Urals power grid", "chemical feedstock"),
+        )
+        simulation.add_technical_knowledge("synthetic chemistry")
+        simulation.add_supply_chain("chemical feedstock")
+        simulation.add_route(self.make_route("Urals power grid"))
+        simulation.set_global_automation(False)
+        simulation.set_global_automation(True)
+        simulation.tick()
+
+        self.assertEqual(
+            simulation.state.projects[project.name].stage,
+            ProjectStage.DESIGN,
+        )
+        self.assertEqual(
+            simulation.request_report().regions[("Urals", "chemicals")].sector,
+            "chemicals",
+        )
+
+    def test_late_project_can_be_added_and_play_continues_after_1940(self) -> None:
+        simulation = Simulation(
+            start_date=datetime.date(1940, 12, 31),
+            resources=self.lifecycle_resources("equipment"),
+        )
+        simulation.tick()
+        self.assertEqual(simulation.state.date, datetime.date(1941, 1, 1))
+
+        project = Project(
+            name="Urals machine works",
+            region="Urals",
+            nameplate_capacity=10,
+            stage_costs=self.lifecycle_costs("equipment"),
+        )
+        simulation.add_project(project)
+        state = simulation.tick()
+
+        self.assertEqual(state.date, datetime.date(1941, 1, 2))
+        self.assertIn(project.name, state.projects)
+        self.assertEqual(state.projects[project.name].stage, ProjectStage.DESIGN)
+
+    @staticmethod
+    def lifecycle_resources(equipment_resource: str) -> dict[str, float]:
+        return {
+            "survey": 1,
+            "design": 1,
+            "construction_materials": 2,
+            equipment_resource: 1,
+            "electricity": 1,
+            "labor": 1,
+            "freight": 1,
+            "maintenance": 1,
+            "trial_operation": 1,
+        }
+
+    @staticmethod
+    def make_route(identifier: str) -> InfrastructureRoute:
+        return InfrastructureRoute(
+            identifier=identifier,
+            infrastructure_type=InfrastructureType.POWER,
+            start=MapNode("Urals", 0, 0, network_connected=True),
+            end=MapNode(identifier, 1, 0),
+            waypoints=(),
+            snapped=True,
+            commissioned=True,
+            connected_to_legacy=True,
+            distance=1,
+            construction_cost=1,
+            construction_days=1,
+            reliability=1,
+            isolated_premium=0,
+        )
 
     def test_state_mappings_are_read_only(self) -> None:
         simulation = self.make_simulation()
@@ -494,6 +591,52 @@ class FractionalOperationTests(unittest.TestCase):
         self.assertAlmostEqual(state.operating_output, 50)
         self.assertAlmostEqual(state.utilization, 0.5)
         self.assertEqual(state.binding_constraint, "fuel")
+
+    def test_prolonged_maintenance_shortage_degrades_capacity_and_recovers(self) -> None:
+        simulation = self.make_commissioned_simulation(self.operating_resources(10))
+        self.commission(simulation)
+        simulation.add_resources({"maintenance": -2})
+
+        for _ in range(5):
+            simulation.tick()
+            simulation.add_resources(
+                {
+                    "fuel": 10,
+                    "freight": 5,
+                    "materials": 5,
+                    "services": 1,
+                    "power": 4,
+                    "labor": 3,
+                }
+            )
+
+        degraded = simulation.state.projects["Donbas coke works"]
+        self.assertEqual(degraded.stage, ProjectStage.COMMISSIONED)
+        self.assertEqual(degraded.maintenance_deficit_days, 5)
+        self.assertEqual(degraded.commissioned_capacity, 80)
+        self.assertEqual(degraded.operating_output, 0)
+        report = simulation.request_report()
+        self.assertIn(
+            "project Donbas coke works has insufficient maintenance for 5 days",
+            report.disorganization,
+        )
+
+        simulation.add_resources(
+            {
+                "maintenance": 10,
+                "fuel": 10,
+                "freight": 5,
+                "materials": 5,
+                "services": 1,
+                "power": 4,
+                "labor": 3,
+            }
+        )
+        simulation.tick()
+
+        recovered = simulation.state.projects["Donbas coke works"]
+        self.assertEqual(recovered.maintenance_deficit_days, 4)
+        self.assertEqual(recovered.commissioned_capacity, 90)
 
     def test_uncommissioned_project_has_no_operating_output(self) -> None:
         simulation = self.make_commissioned_simulation(self.operating_resources(10))
