@@ -1,0 +1,8 @@
+<div class="resource-grid">
+  {% for resource, amount in state.resources.items() %}
+  <div class="resource-item">
+    <span class="label">{{ resource }}</span>
+    <span class="value">{{ "%.1f"|format(amount) }}</span>
+  </div>
+  {% endfor %}
+</div>

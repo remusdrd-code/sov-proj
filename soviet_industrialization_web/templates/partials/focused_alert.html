@@ -1,0 +1,19 @@
+<div class="focus-section">
+  <h3>Alert</h3>
+  <div class="item-name" style="font-weight:bold;margin-bottom:0.3rem">{{ alert.message }}</div>
+  <div style="font-size:0.78rem">
+    <div><strong>Severity:</strong> <span style="color:
+      {% if alert.severity == 'critical' %}var(--critical)
+      {% elif alert.severity == 'warning' %}var(--warn)
+      {% else %}var(--accent2){% endif %}">
+      {{ alert.severity }}
+    </span></div>
+    <div><strong>Source:</strong> {{ alert.source }}</div>
+    {% if alert.project_name %}
+    <div><strong>Project:</strong> {{ alert.project_name }}</div>
+    {% endif %}
+    {% if alert.region %}
+    <div><strong>Region:</strong> {{ alert.region }}</div>
+    {% endif %}
+  </div>
+</div>

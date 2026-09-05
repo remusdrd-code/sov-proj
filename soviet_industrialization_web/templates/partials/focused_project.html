@@ -1,0 +1,16 @@
+<div class="focus-section">
+  <h3>Project</h3>
+  <div class="item-name" style="font-weight:bold;margin-bottom:0.3rem">{{ project.name }}</div>
+  <div style="font-size:0.78rem">
+    <div><strong>Region:</strong> {{ project.region }}</div>
+    <div><strong>Stage:</strong> <span class="stage-badge">{{ project.stage }}</span></div>
+    <div><strong>Sector:</strong> {{ project.sector }}</div>
+    <div><strong>Priority:</strong> {{ project.priority }}</div>
+    {% if project.binding_constraint %}
+    <div style="color:var(--warn)"><strong>Constraint:</strong> {{ project.binding_constraint }}</div>
+    {% endif %}
+    {% if project.blocked_by %}
+    <div><strong>Blocked by:</strong> {{ project.blocked_by|join(', ') }}</div>
+    {% endif %}
+  </div>
+</div>

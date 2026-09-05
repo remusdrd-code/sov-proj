@@ -1,0 +1,17 @@
+{% if not queue %}
+<p style="color:var(--muted);font-size:0.78rem">No pending decisions</p>
+{% else %}
+{% for item in queue %}
+<div class="queue-item {{ 'critical' if item.severity == 'critical' else '' }}">
+  <div><strong>{{ item.target }}</strong> — {{ item.system }}</div>
+  <div style="font-size:0.75rem;color:var(--muted)">{{ item.action }}</div>
+  <div class="action-row">
+    {% for action in item.available_actions %}
+    <button class="btn"
+            hx-post="/api/control/resolve/{{ item.id }}?action={{ action }}"
+            hx-swap="none">{{ action }}</button>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+{% endif %}

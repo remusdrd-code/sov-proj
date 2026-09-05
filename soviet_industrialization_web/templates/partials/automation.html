@@ -1,0 +1,24 @@
+<div style="font-size:0.8rem">
+  <div style="margin-bottom:0.4rem">
+    <label>
+      <input type="checkbox"
+             {{ 'checked' if state.global_automation else '' }}
+             hx-post="/api/control/global-automation"
+             hx-swap="none"
+             onchange="fetch('/api/control/global-automation', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:this.checked})})"
+      /> Global automation
+    </label>
+  </div>
+  {% for system, enabled in state.automation.items() %}
+  <div style="margin-bottom:0.2rem">
+    <label>
+      <input type="checkbox"
+             {{ 'checked' if enabled else '' }}
+             hx-post="/api/control/automation/{{ system }}"
+             hx-swap="none"
+             onchange="fetch('/api/control/automation/{{ system }}', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:this.checked})})"
+      /> {{ system }}
+    </label>
+  </div>
+  {% endfor %}
+</div>

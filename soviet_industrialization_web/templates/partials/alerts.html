@@ -1,0 +1,13 @@
+{% if not alerts %}
+<p style="color:var(--ok);font-size:0.78rem">✓ No active alerts</p>
+{% else %}
+{% for alert in alerts %}
+<div class="alert {{ alert.severity }}"
+     hx-get="/partials/focused/alert/{{ alert.id }}"
+     hx-target="#focus-body"
+     hx-swap="innerHTML"
+     style="cursor:pointer">
+  <div class="msg">{{ alert.message }}</div>
+</div>
+{% endfor %}
+{% endif %}

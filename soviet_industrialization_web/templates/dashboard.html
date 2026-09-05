@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Soviet Industrialization — Dashboard</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --bg: #f5f0e8;
+      --panel-bg: #fffdf7;
+      --border: #c8b89a;
+      --text: #2c1f0e;
+      --accent: #8b1a1a;
+      --accent2: #1a3a5c;
+      --warn: #b86e00;
+      --critical: #8b0000;
+      --ok: #1a5c2a;
+      --muted: #7a6a52;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Georgia, serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+    header { background: var(--accent); color: #fff8e1; padding: 0.4rem 1rem; display: flex; align-items: center; gap: 1.5rem; }
+    header h1 { font-size: 1.1rem; font-weight: normal; letter-spacing: 0.05em; }
+    .topbar { display: flex; gap: 1rem; align-items: center; font-size: 0.85rem; }
+    .topbar .date { font-variant-numeric: tabular-nums; }
+    .controls { display: flex; gap: 0.4rem; }
+    button, .btn { padding: 0.2rem 0.6rem; border: 1px solid var(--border); background: var(--panel-bg); cursor: pointer; font-family: inherit; font-size: 0.8rem; border-radius: 2px; }
+    button:hover, .btn:hover { background: var(--bg); }
+    button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    #main { display: flex; flex: 1; overflow: hidden; }
+    #sidebar { width: 340px; overflow-y: auto; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+    #sidebar section { border-bottom: 1px solid var(--border); }
+    #sidebar section h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding: 0.4rem 0.6rem; background: #f0ebe0; cursor: pointer; user-select: none; }
+    #sidebar section h2:hover { background: #e8e0d0; }
+    .panel-body { padding: 0.5rem; font-size: 0.82rem; }
+    .resource-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem; }
+    .resource-item { display: flex; justify-content: space-between; padding: 0.15rem 0.3rem; }
+    .resource-item .label { color: var(--muted); }
+    .resource-item .value { font-variant-numeric: tabular-nums; font-weight: bold; }
+    .alert { padding: 0.3rem 0.4rem; border-left: 3px solid var(--border); margin-bottom: 0.25rem; font-size: 0.8rem; }
+    .alert.critical { border-color: var(--critical); background: #fff0f0; }
+    .alert.warning { border-color: var(--warn); background: #fff8e0; }
+    .alert.info { border-color: var(--accent2); background: #f0f4ff; }
+    .alert .msg { font-size: 0.78rem; }
+    .project-item { padding: 0.3rem 0.4rem; border-bottom: 1px solid #e8e0d0; cursor: pointer; }
+    .project-item:last-child { border-bottom: none; }
+    .project-item:hover { background: #f0ebe0; }
+    .project-item .name { font-weight: bold; font-size: 0.82rem; }
+    .project-item .meta { font-size: 0.75rem; color: var(--muted); }
+    .project-item .stage-badge { display: inline-block; padding: 0 0.3rem; border-radius: 2px; font-size: 0.7rem; background: var(--accent2); color: #fff; }
+    .queue-item { padding: 0.3rem 0.4rem; border-bottom: 1px solid #e8e0d0; font-size: 0.8rem; }
+    .queue-item:last-child { border-bottom: none; }
+    .queue-item.critical { background: #fff0f0; }
+    .queue-item .action-row { display: flex; gap: 0.3rem; align-items: center; margin-top: 0.2rem; }
+    #map-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    #map-toolbar { background: #e8e0d0; border-bottom: 1px solid var(--border); padding: 0.3rem 0.6rem; display: flex; gap: 0.4rem; align-items: center; }
+    #map-toolbar label { font-size: 0.78rem; }
+    #map-toolbar select { padding: 0.15rem 0.4rem; font-family: inherit; font-size: 0.78rem; }
+    #map { flex: 1; }
+    #focus-panel { width: 280px; border-left: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
+    #focus-panel .focus-header { background: var(--accent2); color: #fff; padding: 0.4rem 0.6rem; font-size: 0.82rem; }
+    #focus-panel .focus-body { padding: 0.5rem; font-size: 0.82rem; }
+    .focus-section { margin-bottom: 0.75rem; }
+    .focus-section h3 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.2rem; }
+    .locked-overlay { background: repeating-linear-gradient(45deg, #c8b89a, #c8b89a 4px, #b0a080 4px, #b0a080 8px); color: #5a4a2a; font-size: 0.78rem; text-align: center; padding: 0.3rem; }
+    .mode-political { --map-accent: #5a3a8a; }
+    .mode-industry { --map-accent: #1a5c2a; }
+    .mode-network { --map-accent: #1a3a5c; }
+    .mode-constraints { --map-accent: #b86e00; }
+    .mode-rnd { --map-accent: #5a1a8a; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Soviet Industrialization Dashboard</h1>
+    <div class="topbar"
+         hx-get="/partials/summary"
+         hx-trigger="every 1s"
+         hx-swap="innerHTML">
+      <span class="date" id="date-display">Loading…</span>
+      <div class="controls">
+        <button id="btn-pause" hx-post="/api/control/pause" hx-swap="none" title="Pause">⏸</button>
+        <button id="btn-resume" hx-post="/api/control/resume" hx-swap="none" title="Resume">▶</button>
+        <button id="btn-tick" hx-post="/api/control/tick" hx-swap="none" title="Advance one day">↦</button>
+        <select id="speed-select" hx-post="/api/control/speed" hx-swap="none">
+          <option value="1">1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </div>
+    </div>
+  </header>
+
+  <div id="main">
+    <aside id="sidebar">
+      <!-- Resources -->
+      <section>
+        <h2>Resources</h2>
+        <div class="panel-body"
+             hx-get="/partials/summary"
+             hx-trigger="every 1s"
+             hx-swap="innerHTML"
+             id="resources-panel">
+          <div class="resource-grid" id="resource-grid">Loading…</div>
+        </div>
+      </section>
+
+      <!-- Alerts -->
+      <section>
+        <h2>Alerts</h2>
+        <div class="panel-body"
+             hx-get="/partials/alerts"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML"
+             id="alerts-panel">
+          <p style="color:var(--muted);font-size:0.78rem">Loading…</p>
+        </div>
+      </section>
+
+      <!-- Project Queue -->
+      <section>
+        <h2>Project Queue</h2>
+        <div class="panel-body"
+             hx-get="/partials/projects"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML"
+             id="projects-panel">
+          <p style="color:var(--muted);font-size:0.78rem">Loading…</p>
+        </div>
+      </section>
+
+      <!-- Decision Queue -->
+      <section>
+        <h2>Decision Queue</h2>
+        <div class="panel-body"
+             hx-get="/partials/queue"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML"
+             id="queue-panel">
+          <p style="color:var(--muted);font-size:0.78rem">Loading…</p>
+        </div>
+      </section>
+
+      <!-- Automation -->
+      <section>
+        <h2>Automation</h2>
+        <div class="panel-body"
+             hx-get="/partials/automation"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML"
+             id="automation-panel">
+          <p style="color:var(--muted);font-size:0.78rem">Loading…</p>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Map -->
+    <div id="map-container" class="mode-political">
+      <div id="map-toolbar">
+        <label for="map-mode">Map mode:</label>
+        <select id="map-mode" onchange="setMapMode(this.value)">
+          <option value="political">Political</option>
+          <option value="industry">Industry</option>
+          <option value="network">Network</option>
+          <option value="constraints">Constraints</option>
+          <option value="rnd">R&amp;D</option>
+        </select>
+      </div>
+      <div id="map"
+           hx-get="/partials/map"
+           hx-trigger="every 2s"
+           hx-swap="innerHTML">
+      </div>
+    </div>
+
+    <!-- Focus panel (right) -->
+    <aside id="focus-panel">
+      <div class="focus-header" id="focus-header">Click a region, project, route, or alert</div>
+      <div class="focus-body" id="focus-body">
+        <p style="color:var(--muted);font-size:0.78rem">
+          Click on a map region, project item, or alert to inspect details here.
+          Decisions remain visible in the decision queue above.
+        </p>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    // -----------------------------------------------------------------------
+    // Map rendering via Leaflet
+    // -----------------------------------------------------------------------
+    let currentMapMode = 'political';
+    let map = null;
+    let regionMarkers = {};
+
+    const MODE_COLORS = {
+      political: { fill: '#d4c4a8', stroke: '#5a3a8a', text: '#2c1f0e' },
+      industry:  { fill: '#c8e0c8', stroke: '#1a5c2a', text: '#0e2c1a' },
+      network:  { fill: '#c8d8e8', stroke: '#1a3a5c', text: '#0e1a2c' },
+      constraints: { fill: '#e8d8a0', stroke: '#b86e00', text: '#2c1a00' },
+      rnd:      { fill: '#dcc8e8', stroke: '#5a1a8a', text: '#1a0e2c' },
+    };
+
+    function setMapMode(mode) {
+      currentMapMode = mode;
+      document.getElementById('map-container').className = 'mode-' + mode;
+      if (map) updateMapMarkers();
+    }
+
+    function initMap() {
+      if (map) return;
+      map = L.map('map', {
+        center: [58, 65],
+        zoom: 3,
+        minZoom: 2,
+        maxZoom: 7,
+        zoomControl: true,
+        attributionControl: false,
+      });
+      // 1930s USSR-inspired muted base
+      L.tileLayer('https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}{r}.png', {
+        maxZoom: 18,
+      }).addTo(map);
+
+      updateMapMarkers();
+    }
+
+    async function updateMapMarkers() {
+      if (!map) return;
+      const resp = await fetch('/api/state.json');
+      const state = await resp.json();
+
+      // Clear existing markers
+      for (const key in regionMarkers) {
+        map.removeLayer(regionMarkers[key]);
+      }
+      regionMarkers = {};
+
+      const colors = MODE_COLORS[currentMapMode] || MODE_COLORS.political;
+
+      for (const region of state.map_regions) {
+        const { name, schematic_x, schematic_y, surveyed, detailed } = region;
+        const x = schematic_x * 140 - 20;  // map to roughly -20 to 120 longitude
+        const y = schematic_y * 70 + 40;   // map to roughly 40 to 110 latitude
+        const lat = 110 - y;  // flip for Leaflet
+        const lng = x - 20;
+
+        const fillColor = surveyed ? colors.fill : '#c8b89a';
+        const opacity = surveyed ? 0.85 : 0.5;
+
+        let marker;
+        if (detailed) {
+          // Detailed regions get a larger circle
+          marker = L.circleMarker([lat, lng], {
+            radius: 12,
+            fillColor,
+            color: colors.stroke,
+            weight: 2,
+            fillOpacity: opacity,
+          });
+        } else {
+          marker = L.circleMarker([lat, lng], {
+            radius: 7,
+            fillColor,
+            color: colors.stroke,
+            weight: 1.5,
+            fillOpacity: opacity,
+          });
+        }
+
+        const label = surveyed ? name : `${name} (locked)`;
+        marker.bindTooltip(label, { direction: 'top', className: 'map-tooltip' });
+
+        if (surveyed) {
+          marker.on('click', () => focusItem('region', name));
+        } else {
+          marker.bindPopup(`<b>${name}</b><br/><em>Survey required to unlock</em>`);
+        }
+
+        marker.addTo(map);
+        regionMarkers[name] = marker;
+      }
+
+      // Draw routes
+      for (const route of state.routes) {
+        // Routes are drawn as conceptual lines - simplified as straight lines
+        // between known region positions
+      }
+    }
+
+    function focusItem(type, id) {
+      htmx.ajax('GET', `/partials/focused/${type}/${encodeURIComponent(id)}`, {
+        target: '#focus-body',
+        swap: 'innerHTML',
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Control helpers
+    // -----------------------------------------------------------------------
+    document.body.addEventListener('htmx:afterSwap', (e) => {
+      if (e.detail.target.id === 'focus-body') {
+        const header = document.querySelector('#focus-header');
+        if (header) {
+          const item = document.querySelector('.focus-body .item-name');
+          header.textContent = item ? item.textContent : 'Details';
+        }
+      }
+    });
+
+    // Init map when dashboard loads
+    window.addEventListener('DOMContentLoaded', () => {
+      initMap();
+      // Poll summary for date display
+      setInterval(async () => {
+        try {
+          const resp = await fetch('/api/state.json');
+          const state = await resp.json();
+          const dateEl = document.getElementById('date-display');
+          if (dateEl) {
+            const speedLabel = {1: '', 2: ' [2×]', 4: ' [4×]'};
+            const pausedLabel = state.paused ? ' [PAUSED]' : '';
+            dateEl.textContent = state.date + pausedLabel + (speedLabel[state.speed] || '');
+          }
+        } catch(e) {}
+      }, 1000);
+    });
+
+    // Speed select
+    document.getElementById('speed-select')?.addEventListener('change', async (e) => {
+      const speed = parseInt(e.target.value);
+      await fetch('/api/control/speed', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({speed}),
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+<div class="focus-section">
+  <h3>Region</h3>
+  <div class="item-name" style="font-weight:bold;margin-bottom:0.3rem">{{ region.name }}</div>
+  <div style="font-size:0.78rem">
+    <div><strong>Detailed:</strong> {{ 'Yes' if region.detailed else 'No' }}</div>
+    <div><strong>Developable:</strong> {{ 'Yes' if region.developable else 'No' }}</div>
+    <div><strong>Surveyed:</strong> {{ 'Yes' if region.surveyed else 'No' }}</div>
+    {% if region.cities %}
+    <div><strong>Cities:</strong> {{ region.cities|join(', ') }}</div>
+    {% endif %}
+    {% if region.industrial_sites %}
+    <div><strong>Sites:</strong> {{ region.industrial_sites|join(', ') }}</div>
+    {% endif %}
+  </div>
+  {% if not region.surveyed %}
+  <div class="locked-overlay">Survey required to unlock</div>
+  {% endif %}
+</div>
