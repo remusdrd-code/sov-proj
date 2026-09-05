@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prototype: Industry Map Mode</title>
+  <!--
+    Question: what does "industry" mode look like on the schematic USSR map?
+    Answer: three radically different visualisations, switchable in-browser.
+    Data: live from /api/state.json if server running, else embedded demo data.
+    Variants:
+      A — Sector bubbles (circle markers sized by capacity, coloured by output type)
+      B — Heatmap grid (choropleth-style colour intensity by industrial density)
+      C — Flow diagram (icons + supply-chain polylines between facilities)
+    Run: open this file directly in a browser, no server needed.
+  -->
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Georgia, serif; background: #1a1a2e; color: #e8e0d0; height: 100vh; display: flex; flex-direction: column; }
+    #header { background: #8b1a1a; padding: 0.5rem 1rem; display: flex; align-items: center; gap: 1rem; }
+    #header h1 { font-size: 1rem; font-weight: normal; color: #fff8e1; }
+    .variant-label { font-size: 0.75rem; color: #fff8e1; opacity: 0.6; }
+    #map { flex: 1; }
+    /* Floating switcher */
+    #switcher {
+      position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 0.4rem; background: rgba(20,15,10,0.9);
+      border: 1px solid #c8b89a; border-radius: 6px; padding: 0.4rem 0.6rem;
+      z-index: 1000; backdrop-filter: blur(4px);
+    }
+    #switcher button {
+      padding: 0.3rem 0.9rem; border: 1px solid #c8b89a; background: transparent;
+      color: #e8e0d0; cursor: pointer; font-family: Georgia, serif; font-size: 0.8rem;
+      border-radius: 3px; transition: all 0.15s;
+    }
+    #switcher button:hover { background: rgba(200,184,154,0.15); }
+    #switcher button.active { background: #8b1a1a; border-color: #8b1a1a; color: #fff; }
+    /* Legend */
+    #legend {
+      position: fixed; top: 4.5rem; right: 1rem;
+      background: rgba(20,15,10,0.88); border: 1px solid #c8b89a;
+      padding: 0.6rem 0.8rem; font-size: 0.75rem; min-width: 130px;
+      z-index: 999; backdrop-filter: blur(4px);
+    }
+    #legend h3 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #7a6a52; margin-bottom: 0.4rem; }
+    .legend-item { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.25rem; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .legend-line { width: 20px; height: 3px; border-radius: 2px; flex-shrink: 0; }
+    .legend-swatch { width: 18px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+    /* Info panel */
+    #info {
+      position: fixed; bottom: 4rem; left: 1rem;
+      background: rgba(20,15,10,0.88); border: 1px solid #c8b89a;
+      padding: 0.5rem 0.75rem; font-size: 0.75rem; max-width: 220px;
+      z-index: 999; backdrop-filter: blur(4px); display: none;
+    }
+    #info h4 { color: #c8b89a; margin-bottom: 0.2rem; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  </style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+
+<div id="header">
+  <h1>Industry Mode Prototype</h1>
+  <span class="variant-label" id="variant-desc">—</span>
+</div>
+
+<div id="map"></div>
+
+<!-- Floating variant switcher -->
+<div id="switcher">
+  <button id="btn-a" onclick="setVariant('A')">A · Bubbles</button>
+  <button id="btn-b" onclick="setVariant('B')">B · Heatmap</button>
+  <button id="btn-c" onclick="setVariant('C')">C · Flow</button>
+</div>
+
+<!-- Legend -->
+<div id="legend"></div>
+
+<!-- Info tooltip -->
+<div id="info"><h4 id="info-title"></h4><div id="info-body"></div></div>
+
+<script>
+// ─── Embedded demo data (mirrors /api/state.json structure) ───────────────────
+const DEMO = {
+  date: "1928-01-01",
+  facilities: {
+    "Moscow steel works": { daily_output: 1.0, operating: true },
+    "Donbas coal mine":   { daily_output: 3.0, operating: true },
+  },
+  projects: [],
+  map_regions: [
+    { name: "Donbas",    detailed: true,  developable: true,  cities: ["Donetsk","Mariupol"], industrial_sites: ["Yuzovka coal basin","Mariupol ironworks"], schematic_x: 0.62, schematic_y: 0.52, surveyed: true },
+    { name: "Moscow",    detailed: true,  developable: true,  cities: ["Moscow"],          industrial_sites: ["Moscow steel works","Moscow machine works"], schematic_x: 0.56, schematic_y: 0.38, surveyed: true },
+    { name: "Leningrad", detailed: true,  developable: true,  cities: ["Leningrad"],      industrial_sites: ["Leningrad shipyard","Leningrad machine works"], schematic_x: 0.52, schematic_y: 0.28, surveyed: true },
+    { name: "Belarus",   detailed: false, developable: true,  cities: ["Minsk"],            industrial_sites: [],                       schematic_x: 0.54, schematic_y: 0.45, surveyed: true },
+    { name: "Urals",     detailed: false, developable: true,  cities: ["Sverdlovsk"],      industrial_sites: [],                       schematic_x: 0.72, schematic_y: 0.38, surveyed: true },
+    { name: "Volga",     detailed: false, developable: true,  cities: ["Nizhny Novgorod"],industrial_sites: [],                       schematic_x: 0.66, schematic_y: 0.44, surveyed: true },
+    { name: "Caucasus",   detailed: false, developable: true,  cities: ["Tbilisi"],         industrial_sites: [],                       schematic_x: 0.68, schematic_y: 0.60, surveyed: true },
+    { name: "Kazakhstan", detailed: false, developable: false, cities: ["Alma-Ata"],        industrial_sites: [],                       schematic_x: 0.80, schematic_y: 0.54, surveyed: false },
+    { name: "Siberia",    detailed: false, developable: false, cities: ["Novosibirsk"],     industrial_sites: [],                       schematic_x: 0.82, schematic_y: 0.32, surveyed: false },
+    { name: "Central Asia",detailed: false, developable: false, cities: ["Tashkent"],        industrial_sites: [],                       schematic_x: 0.80, schematic_y: 0.64, surveyed: false },
+    { name: "Far East",   detailed: false, developable: false, cities: ["Vladivostok"],      industrial_sites: [],                       schematic_x: 0.92, schematic_y: 0.38, surveyed: false },
+  ],
+  routes: [
+    { id: "r1", start: "Moscow",    end: "Leningrad", infrastructure_type: "rail", distance: 650 },
+    { id: "r2", start: "Donbas",    end: "Moscow",    infrastructure_type: "rail", distance: 900 },
+    { id: "r3", start: "Leningrad", end: "Moscow",    infrastructure_type: "rail", distance: 650 },
+    { id: "r4", start: "Donbas",    end: "Leningrad", infrastructure_type: "rail", distance: 1400 },
+    { id: "r5", start: "Moscow",    end: "Urals",     infrastructure_type: "rail", distance: 1800 },
+  ],
+  resources: { coal: 100, steel: 50, electricity: 80, labor: 60 },
+};
+
+// ─── State ──────────────────────────────────────────────────────────────────
+let state = DEMO;
+let map, regionMarkers = {};
+let current = 'A';
+
+// ─── Init ──────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  // Try to fetch live data from server
+  fetch('/api/state.json')
+    .then(r => r.ok ? r.json() : null)
+    .then(s => { if (s) state = s; build(); })
+    .catch(() => build());
+});
+
+function build() {
+  if (map) { map.remove(); regionMarkers = {}; }
+  map = L.map('map', { zoomControl: true, attributionControl: false });
+  map.setView([55, 65], 4);
+
+  // Base tile layer — neutral so industry colours stand out
+  L.tileLayer('https://stamen-tiles.a.ssl.fastly.net/toner-lite/{z}/{x}/{y}.png', {
+    maxZoom: 7, minZoom: 3,
+  }).addTo(map);
+
+  // Always draw base region markers first (grey outline)
+  drawRegions(state.map_regions, 'base');
+
+  // Then apply variant
+  applyVariant(current);
+  updateLegend(current);
+  setVariantDescription(current);
+}
+
+function schematicLatLng(x, y) {
+  const lng = x * 140 - 20;   // -20 to 120
+  const lat = 110 - y * 70;   // 40 to 110
+  return [lat, lng];
+}
+
+// ─── Regions (base layer) ───────────────────────────────────────────────────
+function drawRegions(regions, mode) {
+  regions.forEach(r => {
+    const [lat, lng] = schematicLatLng(r.schematic_x, r.schematic_y);
+    const isDetailed = r.detailed;
+    const isLocked = !r.surveyed;
+
+    let color = '#7a6a52';
+    if (mode === 'base') color = isLocked ? '#9a8a72' : '#c8b89a';
+
+    const marker = L.circleMarker([lat, lng], {
+      radius: isDetailed ? 10 : 6,
+      fillColor: mode === 'base' ? (isLocked ? '#6a5a42' : '#2a2a3e') : color,
+      color: color,
+      weight: mode === 'base' ? 1 : 2,
+      fillOpacity: mode === 'base' ? 0.3 : 0.8,
+      opacity: isLocked ? 0.4 : 0.9,
+    }).addTo(map);
+
+    if (mode === 'base') {
+      const label = isLocked ? `${r.name} (locked)` : r.name;
+      marker.bindTooltip(label, { direction: 'top', className: 'map-tooltip' });
+    }
+    regionMarkers[r.name] = marker;
+  });
+}
+
+// ─── Variant A: Sector bubbles ─────────────────────────────────────────────
+function applyVariantA() {
+  // Facility bubbles sized by daily output, coloured by resource type
+  const COLORS = {
+    coal:   '#8b6914',
+    steel:  '#4a4a5a',
+    iron:   '#5a3a2a',
+    oil:    '#1a1a1a',
+    copper: '#b87333',
+    default:'#3a5a3a',
+  };
+  function facilityColor(name) {
+    const n = name.toLowerCase();
+    if (n.includes('coal'))  return COLORS.coal;
+    if (n.includes('steel') || n.includes('iron') || n.includes('metal')) return COLORS.steel;
+    if (n.includes('oil') || n.includes('petro')) return COLORS.oil;
+    if (n.includes('copper') || n.includes('nonferrous')) return COLORS.copper;
+    return COLORS.default;
+  }
+
+  // Find which region each facility belongs to
+  function facilityRegion(name) {
+    for (const r of state.map_regions) {
+      if (r.industrial_sites && r.industrial_sites.some(s => name.includes(s))) return r;
+      if (r.cities && r.cities.some(c => name.includes(c))) return r;
+    }
+    return null;
+  }
+
+  Object.entries(state.facilities).forEach(([name, fac]) => {
+    const reg = facilityRegion(name);
+    if (!reg) return;
+    const [lat, lng] = schematicLatLng(reg.schematic_x, reg.schematic_y);
+    // Jitter slightly so coincident facilities don't overlap
+    const jitter = Math.random() * 0.02 - 0.01;
+    const r = Math.max(6, Math.min(18, fac.daily_output * 5));
+
+    L.circleMarker([lat + jitter, lng + jitter], {
+      radius: r,
+      fillColor: facilityColor(name),
+      color: '#fff',
+      weight: 1.5,
+      fillOpacity: 0.85,
+    })
+      .bindTooltip(`<b>${name}</b><br/>${fac.daily_output.toFixed(1)}/day output`, { className: 'map-tooltip' })
+      .addTo(map);
+  });
+
+  // Draw rail routes faintly
+  state.routes.forEach(rt => {
+    const sr = regionMarkers[rt.start];
+    const er = regionMarkers[rt.end];
+    if (!sr || !er) return;
+    L.polyline([sr.getLatLng(), er.getLatLng()], {
+      color: '#7a6a52', weight: 1, opacity: 0.3, dashArray: '4,4',
+    }).addTo(map);
+  });
+}
+
+// ─── Variant B: Heatmap choropleth ────────────────────────────────────────
+function applyVariantB() {
+  // Colour intensity by "industrial density" (number of sites + cities + detail level)
+  function industrialScore(r) {
+    let score = r.cities.length * 0.5;
+    score += (r.industrial_sites || []).length * 1.5;
+    if (r.detailed) score += 3;
+    if (r.developable && r.surveyed) score += 1;
+    return score;
+  }
+
+  const max = 5;
+  function densityColor(r) {
+    if (!r.surveyed) return '#3a3a4a';
+    const s = industrialScore(r);
+    const t = Math.min(1, s / max);
+    // Brown → amber → orange-red gradient
+    const R = Math.round(80  + t * 140);
+    const G = Math.round(50  - t * 30);
+    const B = Math.round(20  - t * 15);
+    return `rgb(${R},${G},${B})`;
+  }
+
+  state.map_regions.forEach(r => {
+    const [lat, lng] = schematicLatLng(r.schematic_x, r.schematic_y);
+    const score = industrialScore(r);
+    const color = densityColor(r);
+    const isDetailed = r.detailed;
+    const isLocked = !r.surveyed;
+
+    const marker = L.circleMarker([lat, lng], {
+      radius: isDetailed ? 14 : isLocked ? 5 : 9,
+      fillColor: color,
+      color: isLocked ? '#5a5a6a' : '#c8b89a',
+      weight: isDetailed ? 2.5 : 1,
+      fillOpacity: isLocked ? 0.25 : 0.75,
+      opacity: isLocked ? 0.4 : 0.9,
+    });
+
+    const siteCount = (r.industrial_sites || []).length;
+    const cityCount = r.cities.length;
+    const label = isLocked ? `${r.name} (survey required)` :
+      `${r.name}\n${cityCount} cities, ${siteCount} sites\nscore: ${score.toFixed(1)}`;
+    marker.bindTooltip(label, { className: 'map-tooltip' }).addTo(map);
+    regionMarkers[r.name] = marker;
+  });
+}
+
+// ─── Variant C: Flow diagram ────────────────────────────────────────────────
+function applyVariantC() {
+  const ICONS = {
+    coal:    '⛏',
+    steel:   '🏭',
+    iron:    '🔩',
+    oil:     '🛢',
+    labor:   '👷',
+    default: '🏗',
+  };
+  function facilityIcon(name) {
+    const n = name.toLowerCase();
+    if (n.includes('coal'))  return ICONS.coal;
+    if (n.includes('steel') || n.includes('iron')) return ICONS.steel;
+    if (n.includes('oil') || n.includes('petro')) return ICONS.oil;
+    if (n.includes('labor') || n.includes('worker')) return ICONS.labor;
+    return ICONS.default;
+  }
+
+  // Draw routes as flow arrows
+  state.routes.forEach(rt => {
+    const sr = regionMarkers[rt.start];
+    const er = regionMarkers[rt.end];
+    if (!sr || !er) return;
+    L.polyline([sr.getLatLng(), er.getLatLng()], {
+      color: '#c8b89a', weight: 1.5, opacity: 0.6, dashArray: null,
+    }).addTo(map);
+  });
+
+  // Facility icons at schematic positions
+  Object.entries(state.facilities).forEach(([name, fac]) => {
+    // Find the region that contains this facility's sites
+    let reg = null;
+    for (const r of state.map_regions) {
+      if (r.industrial_sites && r.industrial_sites.some(s => name.includes(s))) { reg = r; break; }
+      if (r.cities && r.cities.some(c => name.includes(c))) { reg = r; break; }
+    }
+    if (!reg) return;
+    const [lat, lng] = schematicLatLng(reg.schematic_x, reg.schematic_y);
+    const jitter = Math.random() * 0.015 - 0.0075;
+
+    // Use DivIcon for emoji
+    const icon = L.divIcon({
+      html: `<div style="font-size:22px;text-shadow:1px 1px 3px rgba(0,0,0,0.7)">${facilityIcon(name)}</div>`,
+      className: '', iconSize: [28, 28], iconAnchor: [14, 14],
+    });
+    L.marker([lat + jitter, lng + jitter], { icon })
+      .bindTooltip(`<b>${name}</b><br/>${fac.daily_output.toFixed(1)}/day`, { className: 'map-tooltip' })
+      .addTo(map);
+  });
+
+  // Add region labels
+  state.map_regions.forEach(r => {
+    if (!r.surveyed) return;
+    const [lat, lng] = schematicLatLng(r.schematic_x, r.schematic_y);
+    const label = L.divIcon({
+      html: `<div style="font-size:9px;color:#c8b89a;text-shadow:0 0 4px #1a1a2e,0 0 8px #1a1a2e;white-space:nowrap;font-family:Georgia,serif">${r.name}</div>`,
+      className: '', iconAnchor: [0, 0],
+    });
+    L.marker([lat - 0.5, lng + 1], { icon: label }).addTo(map);
+  });
+}
+
+// ─── Variant switcher ───────────────────────────────────────────────────────
+function applyVariant(v) {
+  // Remove variant A overlays (facility bubbles & routes) by rebuilding map
+  build();
+}
+
+function setVariant(v) {
+  current = v;
+  document.querySelectorAll('#switcher button').forEach(b => b.classList.remove('active'));
+  document.getElementById(`btn-${v.toLowerCase()}`).classList.add('active');
+  build();
+  updateLegend(v);
+  setVariantDescription(v);
+}
+
+// ─── Legend ─────────────────────────────────────────────────────────────────
+const LEGENDS = {
+  A: [
+    { label: 'Steel / Iron', color: '#4a4a5a', type: 'dot' },
+    { label: 'Coal / Mining', color: '#8b6914', type: 'dot' },
+    { label: 'Oil / Petroleum', color: '#1a1a1a', type: 'dot' },
+    { label: 'Non-ferrous', color: '#b87333', type: 'dot' },
+    { label: 'Rail route', color: '#7a6a52', type: 'line' },
+    { label: 'Bubble size ∝ output', color: null, type: 'note' },
+  ],
+  B: [
+    { label: 'High density', color: 'rgb(220,20,5)', type: 'swatch' },
+    { label: 'Medium density', color: 'rgb(180,50,20)', type: 'swatch' },
+    { label: 'Low density', color: 'rgb(80,50,20)', type: 'swatch' },
+    { label: 'Locked (unsurveyed)', color: '#3a3a4a', type: 'swatch' },
+    { label: '• Circle size = detail level', color: null, type: 'note' },
+  ],
+  C: [
+    { label: '⛏ Mining', color: null, type: 'emoji' },
+    { label: '🏭 Steel/Industry', color: null, type: 'emoji' },
+    { label: '🏗 General construction', color: null, type: 'emoji' },
+    { label: 'Rail connection', color: '#c8b89a', type: 'line' },
+    { label: '• Emoji = facility type', color: null, type: 'note' },
+  ],
+};
+
+function updateLegend(v) {
+  const el = document.getElementById('legend');
+  const items = LEGENDS[v] || [];
+  el.innerHTML = '<h3>Industry Mode</h3>' + items.map(item => {
+    if (item.type === 'dot') return `<div class="legend-item"><div class="legend-dot" style="background:${item.color}"></div><span>${item.label}</span></div>`;
+    if (item.type === 'line') return `<div class="legend-item"><div class="legend-line" style="background:${item.color}"></div><span>${item.label}</span></div>`;
+    if (item.type === 'swatch') return `<div class="legend-item"><div class="legend-swatch" style="background:${item.color}"></div><span>${item.label}</span></div>`;
+    if (item.type === 'emoji') return `<div class="legend-item"><span>${item.label}</span></div>`;
+    if (item.type === 'note') return `<div class="legend-item" style="font-size:0.7rem;color:#7a6a52;margin-top:0.15rem">${item.label}</div>`;
+    return '';
+  }).join('');
+}
+
+function setVariantDescription(v) {
+  const descs = {
+    A: 'Circle size = daily output. Colour = sector. Best for comparing facility scale.',
+    B: 'Choropleth colour = industrial density per region. Best for regional comparison.',
+    C: 'Emoji icons + polylines show facilities and rail connections. Best for supply chains.',
+  };
+  document.getElementById('variant-desc').textContent = descs[v] || '';
+}
+
+// Init with A selected
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btn-a').classList.add('active');
+});
+</script>
+</body>
+</html>
