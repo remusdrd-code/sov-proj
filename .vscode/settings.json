@@ -1,0 +1,9 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "mypy": true,
+        "/^python3 -m unittest discover -s tests -v && mypy soviet_industrialization tests && python3 -m compileall -q soviet_industrialization tests && git diff --check$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

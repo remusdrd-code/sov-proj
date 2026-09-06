@@ -1,0 +1,26 @@
+<div id="project-list">
+  {% if not projects %}
+  <p style="color:var(--muted);font-size:0.78rem">No active projects</p>
+  {% else %}
+  {% for project in projects %}
+  <div class="project-item"
+       hx-get="/partials/focused/project/{{ project.name|urlencode }}"
+       hx-target="#focus-body"
+       hx-swap="innerHTML">
+    <div class="name">{{ project.name }}</div>
+    <div class="meta">
+      {{ project.region }} ·
+      <span class="stage-badge">{{ project.stage }}</span>
+      {% if project.binding_constraint %}
+      · <span style="color:var(--warn)">{{ project.binding_constraint }}</span>
+      {% endif %}
+    </div>
+    {% if project.blocked_by %}
+    <div class="meta" style="color:var(--muted);font-size:0.72rem">
+      Blocked: {{ project.blocked_by|join(', ') }}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% endif %}
+</div>
