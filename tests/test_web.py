@@ -164,7 +164,8 @@ class StateEndpointTests(unittest.TestCase):
         data = endpoint.to_json()
 
         required = {"name", "detailed", "developable", "cities",
-                    "industrial_sites", "schematic_x", "schematic_y", "surveyed"}
+                    "industrial_sites", "schematic_x", "schematic_y", "surveyed",
+                    "lat", "lon"}
         for region in data["map_regions"]:
             self.assertEqual(required, set(region.keys()), f"{region['name']} missing fields")
 

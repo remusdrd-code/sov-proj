@@ -169,10 +169,7 @@
           <option value="rnd">R&amp;D</option>
         </select>
       </div>
-      <div id="map"
-           hx-get="/partials/map"
-           hx-trigger="every 2s"
-           hx-swap="innerHTML">
+      <div id="map">
       </div>
     </div>
 
@@ -195,22 +192,75 @@
     let currentMapMode = 'political';
     let map = null;
     let regionMarkers = {};
+    let oblastGeoJSONLayer = null;
+    let oblastStyle = {};
+    let oblastUrl = null;
 
     const MODE_COLORS = {
       political: { fill: '#d4c4a8', stroke: '#5a3a8a', text: '#2c1f0e' },
       industry:  { fill: '#c8e0c8', stroke: '#1a5c2a', text: '#0e2c1a' },
-      network:  { fill: '#c8d8e8', stroke: '#1a3a5c', text: '#0e1a2c' },
+      network:   { fill: '#c8d8e8', stroke: '#1a3a5c', text: '#0e1a2c' },
       constraints: { fill: '#e8d8a0', stroke: '#b86e00', text: '#2c1a00' },
-      rnd:      { fill: '#dcc8e8', stroke: '#5a1a8a', text: '#1a0e2c' },
+      rnd:       { fill: '#dcc8e8', stroke: '#5a1a8a', text: '#1a0e2c' },
     };
 
-    function setMapMode(mode) {
-      currentMapMode = mode;
-      document.getElementById('map-container').className = 'mode-' + mode;
-      if (map) updateMapMarkers();
+    // Oblast name → region membership for styling locked/unlocked
+    const REGION_OBLASTS = {
+      "Donbas": ["Donets'k", "Luhans'k", "Dnipropetrovs'k", "Zaporizhzhya", "Rostov"],
+      "Moscow": ["Moskva", "Moskovskaya", "Tula", "Ryazan'", "Vladimir", "Kaluga", "Tver'", "Ivanovo", "Yaroslavl'", "Kostroma"],
+      "Leningrad": ["Leningrad", "City of St. Petersburg", "Novgorod", "Pskov", "Karelia", "Murmansk"],
+      "Belarus": ["Brest", "Gomel", "Grodno", "Minsk", "Mogilev", "Vitebsk", "City of Minsk"],
+      "Volga": ["Nizhegorod", "Samara", "Saratov", "Ul'yanovsk", "Penza", "Udmurt", "Tatarstan", "Orenburg", "Orel", "Kursk", "Lipetsk", "Tambov"],
+      "Urals": ["Sverdlovsk", "Chelyabinsk", "Perm'", "Tyumen'", "Kurgan"],
+      "Caucasus": ["Rostov", "Krasnodar", "Stavropol'", "Adygey", "Karachay-Cherkess", "Kabardin-Balkar", "North Ossetia", "Chechnya", "Ingush", "Dagestan"],
+      "Siberia": ["Kemerovo", "Novosibirsk", "Irkutsk", "Krasnoyarsk", "Altay", "Tomsk", "Omsk"],
+      "Far East": ["Khabarovsk", "Primor'ye", "Sakhalin", "Amur", "Kamchatka", "Magadan", "Sakha (Yakutia)", "Chukchi Autonomous Okrug"],
+      "Kazakhstan": [
+        "Orenburg", "Chelyabinsk", "Kurgan", "Altay",
+        "Akmola", "Aktobe", "Almaty", "Atyrau", "East Kazakhstan",
+        "Jambyl", "Karaganda", "Kostanay", "Kyzylorda", "Mangystau",
+        "North Kazakhstan", "Pavlodar", "Turkistan", "West Kazakhstan", "Nur-Sultan",
+      ],
+      "Central Asia": [
+        "Orenburg", "Astrakhan'",
+        "Fergana", "Tashkent", "Namangan", "Andijan", "Jizzakh",
+        "Samarqand", "Bukhara", "Navoiy", "Qashqadaryo", "Surxondaryo",
+        "Xorazm", "Sirdaryo", "Karakalpakstan",
+        "Osh", "Jalal-Abad", "Chuy", "Batken", "Talas", "Issyk-Kul", "Naryn", "Bishkek",
+        "Khatlon", "Khujand", "districts of Republican Subordination", "Gorno-Badakhshan", "Dushanbe",
+        "Ahal", "Balkan", "Lebap", "Mary", "Daşoguz",
+      ],
+    };
+    const LOCKED_REGIONS = new Set(["Siberia", "Kazakhstan", "Central Asia", "Far East"]);
+
+    function getOblastStyle(feature, colors) {
+      const name = feature.properties.name || '';
+      const admin = feature.properties.admin || 'Russia';
+      // Locked: Siberia, Kazakhstan, Central Asia, Far East
+      let isLocked = false;
+      for (const [key, names] of Object.entries(REGION_OBLASTS)) {
+        if (LOCKED_REGIONS.has(key) && names.some(n => name.includes(n) || n.includes(name))) {
+          isLocked = true;
+          break;
+        }
+      }
+      const fillColor = isLocked ? '#c8b89a' : colors.fill;
+      const opacity = isLocked ? 0.3 : 0.5;
+      return {
+        fillColor,
+        color: colors.stroke,
+        weight: 1,
+        fillOpacity: opacity,
+        opacity: 0.7,
+      };
     }
 
-    function initMap() {
+    async function loadOblastGeoJSON(url) {
+      const resp = await fetch(url);
+      return resp.json();
+    }
+
+    async function initMap() {
       if (map) return;
       map = L.map('map', {
         center: [58, 65],
@@ -220,10 +270,15 @@
         zoomControl: true,
         attributionControl: false,
       });
-      // 1930s USSR-inspired muted base
-      L.tileLayer('https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}{r}.png', {
+      L.tileLayer('https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}.png', {
         maxZoom: 18,
+        attribution: '© OpenStreetMap contributors',
       }).addTo(map);
+
+      // Fetch state to get oblast GeoJSON URL
+      const stateResp = await fetch('/api/state.json');
+      const state = await stateResp.json();
+      oblastUrl = state.oblast_geojson_url || '/static/ussr_oblasts_simplified.geojson';
 
       updateMapMarkers();
     }
@@ -233,28 +288,43 @@
       const resp = await fetch('/api/state.json');
       const state = await resp.json();
 
-      // Clear existing markers
+      const colors = MODE_COLORS[currentMapMode] || MODE_COLORS.political;
+      oblastStyle = colors;
+
+      // Load oblast GeoJSON if not yet loaded
+      if (!oblastGeoJSONLayer && oblastUrl) {
+        try {
+          const geojson = await loadOblastGeoJSON(oblastUrl);
+          oblastGeoJSONLayer = L.geoJSON(geojson, {
+            style: (feature) => getOblastStyle(feature, colors),
+            onEachFeature: (feature, layer) => {
+              const name = feature.properties.name || '';
+              layer.bindTooltip(name, { direction: 'top', className: 'map-tooltip', sticky: true });
+            },
+          }).addTo(map);
+        } catch (e) {
+          console.warn('Failed to load oblast GeoJSON:', e);
+        }
+      } else if (oblastGeoJSONLayer) {
+        // Update style on mode change
+        oblastGeoJSONLayer.setStyle((feature) => getOblastStyle(feature, colors));
+      }
+
+      // Clear existing markers and route lines
       for (const key in regionMarkers) {
         map.removeLayer(regionMarkers[key]);
       }
       regionMarkers = {};
 
-      const colors = MODE_COLORS[currentMapMode] || MODE_COLORS.political;
-
       for (const region of state.map_regions) {
-        const { name, schematic_x, schematic_y, surveyed, detailed } = region;
-        const x = schematic_x * 140 - 20;  // map to roughly -20 to 120 longitude
-        const y = schematic_y * 70 + 40;   // map to roughly 40 to 110 latitude
-        const lat = 110 - y;  // flip for Leaflet
-        const lng = x - 20;
+        const { name, lat, lon, surveyed, detailed } = region;
 
         const fillColor = surveyed ? colors.fill : '#c8b89a';
         const opacity = surveyed ? 0.85 : 0.5;
 
         let marker;
         if (detailed) {
-          // Detailed regions get a larger circle
-          marker = L.circleMarker([lat, lng], {
+          marker = L.circleMarker([lat, lon], {
             radius: 12,
             fillColor,
             color: colors.stroke,
@@ -262,7 +332,7 @@
             fillOpacity: opacity,
           });
         } else {
-          marker = L.circleMarker([lat, lng], {
+          marker = L.circleMarker([lat, lon], {
             radius: 7,
             fillColor,
             color: colors.stroke,
@@ -292,13 +362,23 @@
         opacity: currentMapMode === 'network' ? 0.9 : 0.6,
       };
       for (const route of state.routes) {
-        // Skip routes with unknown endpoints
         if (!route.start || !route.end) continue;
         const startRegion = regionMarkers[route.start];
         const endRegion = regionMarkers[route.end];
         if (!startRegion || !endRegion) continue;
         const latlngs = [startRegion.getLatLng(), endRegion.getLatLng()];
         L.polyline(latlngs, routeLineStyle).addTo(map);
+      }
+    }
+
+    function setMapMode(mode) {
+      currentMapMode = mode;
+      const container = document.getElementById('map-container');
+      if (container) {
+        container.className = `mode-${mode}`;
+      }
+      if (map) {
+        updateMapMarkers();
       }
     }
 

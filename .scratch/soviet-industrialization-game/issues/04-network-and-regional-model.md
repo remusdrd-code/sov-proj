@@ -2,7 +2,8 @@
 
 **What to build:** Players draw rail, roads, power lines, pipelines, and canals across terrain with snapping, waypoints, terrain-sensitive costs, network benefits, and isolated-construction penalties.
 
-**Blocked by:** 02: National Map and Legacy Infrastructure; 03: Project Lifecycle and Construction Gating
+git clone https://github.com/remusdrd-code/sov-proj.git ~/sov-proj
+cd ~/sov-proj**Blocked by:** 02: National Map and Legacy Infrastructure; 03: Project Lifecycle and Construction Gating
 
 **Status:** resolved
 

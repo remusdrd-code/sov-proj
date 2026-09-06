@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE: Decision Queue and Autopause</title>
+  <style>
+    :root {
+      --ink: #202a2c;
+      --muted: #667477;
+      --paper: #f4f1e9;
+      --panel: #fffdf8;
+      --line: #d9d4c8;
+      --accent: #b24d2e;
+      --accent-dark: #80351f;
+      --notice: #4b7290;
+      --warning: #bc7b20;
+      --critical: #a63b36;
+      --ok: #3f7657;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.45 Georgia, "Times New Roman", serif;
+    }
+    main { max-width: 1080px; margin: 0 auto; padding: 42px 22px 64px; }
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--accent-dark);
+      font: 700 12px/1.2 "Trebuchet MS", sans-serif;
+      letter-spacing: 1.7px;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { margin: 0; font-weight: 600; }
+    h1 { max-width: 720px; font-size: clamp(32px, 6vw, 58px); line-height: .98; }
+    h2 { font-size: 24px; }
+    h3 { font-size: 18px; }
+    .intro { max-width: 760px; margin: 18px 0 34px; color: #4e5b5d; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); gap: 18px; }
+    .panel { padding: 22px; background: var(--panel); border: 1px solid var(--line); box-shadow: 0 8px 24px #453e3210; }
+    .panel + .panel { margin-top: 18px; }
+    .panel-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    .state-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+    .state-cell { min-height: 88px; padding: 13px; background: var(--panel); }
+    .label { display: block; color: var(--muted); font: 700 11px/1.2 "Trebuchet MS", sans-serif; letter-spacing: 1px; text-transform: uppercase; }
+    .value { display: block; margin-top: 8px; font-size: 22px; }
+    .paused { color: var(--critical); }
+    .running { color: var(--ok); }
+    .queue { display: grid; gap: 12px; }
+    .queue-item { padding: 16px; border-left: 5px solid var(--notice); background: #f7f5ef; }
+    .queue-item.warning { border-color: var(--warning); }
+    .queue-item.critical { border-color: var(--critical); background: #fff4f1; }
+    .queue-top { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .severity { font: 700 11px "Trebuchet MS", sans-serif; letter-spacing: 1px; text-transform: uppercase; }
+    .notice .severity { color: var(--notice); }
+    .warning .severity { color: var(--warning); }
+    .critical .severity { color: var(--critical); }
+    .queue-item p { margin: 7px 0 12px; color: #536063; }
+    .meta { display: grid; gap: 4px; margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+    .meta strong { color: var(--ink); }
+    .actions, .free-play { display: flex; flex-wrap: wrap; gap: 8px; }
+    button { border: 1px solid #bdb5a8; padding: 9px 12px; color: var(--ink); background: #fffdf8; font: 700 13px "Trebuchet MS", sans-serif; cursor: pointer; }
+    button:hover { border-color: var(--accent); color: var(--accent-dark); }
+    button.primary { border-color: var(--accent); color: white; background: var(--accent); }
+    button.primary:hover { background: var(--accent-dark); }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    .log { min-height: 62px; margin: 0; color: #536063; font-size: 15px; }
+    .switch { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .switch:last-child { border-bottom: 0; }
+    .switch button { min-width: 92px; }
+    .walkthroughs { grid-column: 1 / -1; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
+    .tab.active { border-color: var(--ink); background: var(--ink); color: white; }
+    .scenario-copy { margin: 0 0 14px; color: #536063; }
+    .step-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .step-list button.done { color: var(--ok); border-color: var(--ok); }
+    .footnote { margin-top: 26px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 720px) {
+      main { padding-top: 28px; }
+      .layout { grid-template-columns: 1fr; }
+      .walkthroughs { grid-column: auto; }
+      .state-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Throwaway logic prototype</p>
+    <h1>Decision queue and critical autopause</h1>
+    <p class="intro">Question: does a severity-based queue protect the plan at the right moments? Try routine shortages, disabled automation, and irreversible risks. Notice items should stay visible without stopping time; warnings pause only when their system is manual; critical decisions pause and require an explicit resume even after resolution.</p>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-heading"><h2>Current state</h2><span id="scenario-label" class="label"></span></div>
+        <div id="state-grid" class="state-grid"></div>
+        <p id="log" class="log"></p>
+        <div class="panel-heading"><h2>Decision queue</h2><span id="queue-count" class="label"></span></div>
+        <div id="queue" class="queue"></div>
+      </section>
+
+      <aside>
+        <section class="panel">
+          <div class="panel-heading"><h2>Free play</h2></div>
+          <div class="free-play">
+            <button class="primary" data-action="tick">Advance one day</button>
+            <button data-action="resume">Resume simulation</button>
+            <button data-action="add-notice">Add routine notice</button>
+            <button data-action="add-warning">Add warning</button>
+            <button data-action="add-critical">Add critical item</button>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><h2>Automation</h2></div>
+          <div class="switch"><span>Industry decisions</span><button id="industry-toggle" data-action="toggle-industry"></button></div>
+          <p class="footnote">Delegation turns on automation for the affected system. A manual order resolves one item without changing the standing switch.</p>
+        </section>
+      </aside>
+
+      <section class="panel walkthroughs">
+        <div class="panel-heading"><h2>Guided walkthroughs</h2></div>
+        <div id="tabs" class="tabs"></div>
+        <p id="scenario-copy" class="scenario-copy"></p>
+        <div id="steps" class="step-list"></div>
+      </section>
+    </div>
+    <p class="footnote">Prototype only. State resets on reload and is intentionally not connected to the production simulation.</p>
+  </main>
+
+  <script>
+    // Portable prototype logic: the page below only renders and dispatches actions.
+    const scenarios = [
+      {
+        name: "Routine shortage",
+        description: "A steel works has too little coal today. It is recoverable, so the queue reports it without interrupting time.",
+        steps: [["Reset scenario", "reset"], ["Advance one day", "tick"], ["Dismiss the notice", "dismiss-first"]],
+        initial: () => initialState("routine", false, [{ id: "coal-shortage", severity: "notice", system: "industry", target: "Moscow steel works", cost: "1 day of partial output", actions: ["dismiss"], recommended: "dismiss", text: "Coal delivery is short, but the works can recover tomorrow." }])
+      },
+      {
+        name: "Manual warning",
+        description: "Industry automation is off and a plant is idle. The warning pauses because no automated system can make the choice for you.",
+        steps: [["Reset scenario", "reset"], ["Issue a manual order", "manual-first"], ["Advance one day", "tick"]],
+        initial: () => initialState("warning", true, [{ id: "idle-plant", severity: "warning", system: "industry", target: "Moscow steel works", cost: "lost production while idle", actions: ["operate", "dismiss", "delegate"], recommended: "operate", text: "The plant is ready, but industry automation is disabled." }])
+      },
+      {
+        name: "Critical risk",
+        description: "A project is about to lose scarce imported equipment. Resolving it protects the plan, but only an explicit resume starts the clock again.",
+        steps: [["Reset scenario", "reset"], ["Resolve critical item", "resolve-first"], ["Resume explicitly", "resume"], ["Advance one day", "tick"]],
+        initial: () => initialState("critical", true, [{ id: "import-window", severity: "critical", system: "imports", target: "Urals power expansion", cost: "missed import window and stranded construction", actions: ["reserve", "dismiss", "delegate"], recommended: "reserve", text: "Imported turbines are available for one planning window only." }])
+      }
+    ];
+
+    function initialState(scenario, industryAutomation, queue) {
+      return { scenario, day: 1, paused: queue.some(item => item.severity === "critical") || (queue.some(item => item.severity === "warning") && !industryAutomation), criticalPauseLatched: queue.some(item => item.severity === "critical"), industryAutomation, queue, lastChange: "Scenario loaded." };
+    }
+
+    function reducer(state, action) {
+      if (action.type === "reset") return scenarios[action.index].initial();
+      if (action.type === "tick") {
+        if (state.paused) return { ...state, lastChange: "The simulation is paused. Resolve the queue and resume explicitly." };
+        return { ...state, day: state.day + 1, lastChange: "One daily transition applied." };
+      }
+      if (action.type === "resume") return { ...state, paused: false, criticalPauseLatched: false, lastChange: "Simulation resumed by explicit player action." };
+      if (action.type === "toggle-industry") {
+        const industryAutomation = !state.industryAutomation;
+        const warningPresent = state.queue.some(item => item.severity === "warning");
+        return { ...state, industryAutomation, paused: state.criticalPauseLatched || (warningPresent && !industryAutomation), lastChange: industryAutomation ? "Industry automation enabled." : "Industry automation disabled; affected work may pause." };
+      }
+      if (action.type === "add") {
+        const item = action.item;
+        const queue = [...state.queue, item];
+        const causesPause = item.severity === "critical" || (item.severity === "warning" && !state.industryAutomation);
+        return { ...state, queue, paused: state.paused || causesPause, criticalPauseLatched: state.criticalPauseLatched || item.severity === "critical", lastChange: `${item.severity} added to the decision queue.` };
+      }
+      if (action.type === "resolve" || action.type === "dismiss") {
+        const item = state.queue.find(entry => entry.id === action.id);
+        if (!item) return state;
+        const queue = state.queue.filter(entry => entry.id !== action.id);
+        const delegated = action.type === "resolve" && action.choice === "delegate";
+        const industryAutomation = delegated && item.system === "industry" ? true : state.industryAutomation;
+        const paused = item.severity === "critical" ? state.paused : false;
+        return { ...state, queue, industryAutomation, paused, lastChange: action.type === "dismiss" ? `${item.target} dismissed.` : `${item.target}: ${action.choice} selected.${item.severity === "critical" ? " Resume is still explicit." : ""}` };
+      }
+      return state;
+    }
+
+    let activeScenario = 0;
+    let state = scenarios[activeScenario].initial();
+    const $ = id => document.getElementById(id);
+
+    function dispatch(action) {
+      if (action.type === "reset") action.index = activeScenario;
+      state = reducer(state, action);
+      render();
+    }
+
+    function render() {
+      $("scenario-label").textContent = scenarios[activeScenario].name;
+      $("state-grid").innerHTML = [
+        ["Simulation", state.paused ? "PAUSED" : "RUNNING", state.paused ? "paused" : "running"],
+        ["Day", `1928-01-${String(state.day).padStart(2, "0")}`, ""],
+        ["Industry automation", state.industryAutomation ? "Enabled" : "Manual", ""],
+        ["Queue items", state.queue.length, ""],
+        ["Critical latch", state.criticalPauseLatched ? "Waiting for resume" : "Clear", ""],
+        ["Latest change", state.lastChange, ""]
+      ].map(([label, value, className]) => `<div class="state-cell"><span class="label">${label}</span><span class="value ${className}">${value}</span></div>`).join("");
+      $("log").textContent = state.lastChange;
+      $("queue-count").textContent = `${state.queue.length} unresolved`;
+      $("industry-toggle").textContent = state.industryAutomation ? "Enabled" : "Manual";
+      $("queue").innerHTML = state.queue.length ? state.queue.map(item => `
+        <article class="queue-item ${item.severity}">
+          <div class="queue-top"><h3>${item.target}</h3><span class="severity">${item.severity}</span></div>
+          <p>${item.text}</p>
+          <div class="meta"><span><strong>Affected:</strong> ${item.system}</span><span><strong>Cost of waiting:</strong> ${item.cost}</span><span><strong>Recommended:</strong> ${item.recommended}</span></div>
+          <div class="actions">${item.actions.map(choice => `<button data-queue-action="${choice}" data-id="${item.id}" class="${choice === item.recommended ? "primary" : ""}">${choice === "delegate" ? "Delegate permanently" : choice === "dismiss" ? "Dismiss" : `Resolve: ${choice}`}</button>`).join("")}</div>
+        </article>`).join("") : `<p class="log">No unresolved decisions. The queue is clear.</p>`;
+      $("tabs").innerHTML = scenarios.map((scenario, index) => `<button class="tab ${index === activeScenario ? "active" : ""}" data-tab="${index}">${scenario.name}</button>`).join("");
+      $("scenario-copy").textContent = scenarios[activeScenario].description;
+      $("steps").innerHTML = scenarios[activeScenario].steps.map(([label, type], index) => `<button data-step="${type}" class="${index < 0 ? "done" : ""}">${index + 1}. ${label}</button>`).join("");
+    }
+
+    document.addEventListener("click", event => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      if (button.dataset.tab) { activeScenario = Number(button.dataset.tab); dispatch({ type: "reset" }); return; }
+      if (button.dataset.queueAction) {
+        const choice = button.dataset.queueAction;
+        dispatch(choice === "dismiss" ? { type: "dismiss", id: button.dataset.id } : { type: "resolve", id: button.dataset.id, choice });
+        return;
+      }
+      if (button.dataset.step) {
+        const step = button.dataset.step;
+        if (step === "reset") dispatch({ type: "reset" });
+        else if (step === "tick") dispatch({ type: "tick" });
+        else if (step === "resume") dispatch({ type: "resume" });
+        else if (step === "dismiss-first") dispatch({ type: "dismiss", id: state.queue[0]?.id });
+        else if (step === "resolve-first") dispatch({ type: "resolve", id: state.queue[0]?.id, choice: state.queue[0]?.recommended });
+        else if (step === "manual-first") dispatch({ type: "resolve", id: state.queue[0]?.id, choice: "operate" });
+        return;
+      }
+      const type = button.dataset.action;
+      if (type === "tick") dispatch({ type: "tick" });
+      if (type === "resume") dispatch({ type: "resume" });
+      if (type === "toggle-industry") dispatch({ type: "toggle-industry" });
+      if (type === "add-notice") dispatch({ type: "add", item: { id: `notice-${Date.now()}`, severity: "notice", system: "logistics", target: "Coal delivery", cost: "partial output", actions: ["dismiss"], recommended: "dismiss", text: "A routine delivery is below today's target." } });
+      if (type === "add-warning") dispatch({ type: "add", item: { id: `warning-${Date.now()}`, severity: "warning", system: "industry", target: "Idle production line", cost: "lost output while idle", actions: ["operate", "dismiss", "delegate"], recommended: "operate", text: "A manual decision is needed before this line can run." } });
+      if (type === "add-critical") dispatch({ type: "add", item: { id: `critical-${Date.now()}`, severity: "critical", system: "imports", target: "Scarce equipment allocation", cost: "irreversible loss of a delivery window", actions: ["reserve", "dismiss", "delegate"], recommended: "reserve", text: "A scarce imported component needs an explicit allocation." } });
+    });
+
+    render();
+  </script>
+</body>
+</html>

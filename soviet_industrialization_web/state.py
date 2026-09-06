@@ -37,9 +37,24 @@ class MapRegionSummary:
     developable: bool
     cities: tuple[str, ...]
     industrial_sites: tuple[str, ...]
+    lat: float  # real centroid lat from oblast data
+    lon: float  # real centroid lon from oblast data
     schematic_x: float  # normalized 0-1 for visualization
     schematic_y: float
     surveyed: bool = True  # east of Urals starts False
+
+
+def _get_region_latlon(region_name: str) -> tuple[float, float]:
+    """Return (lat, lon) for a region using real centroid from oblast data."""
+    try:
+        from .oblasts import get_region_centroid
+        return get_region_centroid(region_name)
+    except Exception:
+        sx, sy = REGION_SCHEMATIC.get(region_name, (0.5, 0.5))
+        # Fallback schematic conversion
+        lon = sx * 140 - 20
+        lat = 110 - (sy * 70 + 40)
+        return (lat, lon)
 
 
 # Static schematic positions for regions (for visualization)
@@ -115,7 +130,10 @@ def _sim_state_to_json(state: SimulationState) -> dict[str, Any]:
     # Map regions
     map_regions: list[dict[str, Any]] = []
     for region in state.national_map.regions:
-        x, y = REGION_SCHEMATIC.get(region.name, (0.5, 0.5))
+        # Use real centroid lat/lon from oblast data
+        lat, lon = _get_region_latlon(region.name)
+        # Keep schematic for any code that still references it
+        sx, sy = REGION_SCHEMATIC.get(region.name, (0.5, 0.5))
         surveyed = region.name not in URALS_EAST
         map_regions.append({
             "name": region.name,
@@ -123,10 +141,15 @@ def _sim_state_to_json(state: SimulationState) -> dict[str, Any]:
             "developable": region.developable and surveyed,
             "cities": region.cities,
             "industrial_sites": region.industrial_sites,
-            "schematic_x": x,
-            "schematic_y": y,
+            "lat": lat,
+            "lon": lon,
+            "schematic_x": sx,
+            "schematic_y": sy,
             "surveyed": surveyed,
         })
+
+    # Oblast GeoJSON URL for polygon rendering
+    oblast_geojson_url = "/static/ussr_oblasts_simplified.geojson"
     # Routes
     routes: list[dict[str, Any]] = []
     for route_id, route in state.routes.items():
@@ -169,6 +192,7 @@ def _sim_state_to_json(state: SimulationState) -> dict[str, Any]:
         "global_automation": state.global_automation,
         "automation": {k.value: v for k, v in state.automation.items()},
         "critical_pause_latched": state.critical_pause_latched,
+        "oblast_geojson_url": oblast_geojson_url,
     }
 
 

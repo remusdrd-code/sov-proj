@@ -20,7 +20,6 @@
     #header { background: #8b1a1a; padding: 0.5rem 1rem; display: flex; align-items: center; gap: 1rem; }
     #header h1 { font-size: 1rem; font-weight: normal; color: #fff8e1; }
     .variant-label { font-size: 0.75rem; color: #fff8e1; opacity: 0.6; }
-    #map { flex: 1; }
     /* Floating switcher */
     #switcher {
       position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
@@ -58,6 +57,10 @@
   </style>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    #map { height: 600px !important; min-height: 600px; flex: none; }
+    .leaflet-container { background: #1a1a2e !important; }
+  </style>
 </head>
 <body>
 
@@ -133,8 +136,9 @@ function build() {
   map.setView([55, 65], 4);
 
   // Base tile layer — neutral so industry colours stand out
-  L.tileLayer('https://stamen-tiles.a.ssl.fastly.net/toner-lite/{z}/{x}/{y}.png', {
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 7, minZoom: 3,
+    attribution: '© OpenStreetMap contributors © CARTO',
   }).addTo(map);
 
   // Always draw base region markers first (grey outline)

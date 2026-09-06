@@ -3,18 +3,41 @@
 from __future__ import annotations
 
 import datetime
+import json
 import threading
+from dataclasses import replace
 from pathlib import Path
-from typing import Optional
+from types import MappingProxyType
+from typing import Mapping, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from soviet_industrialization.simulation import Facility, Simulation, SimulationSpeed
 
 from .state import SimulationStateEndpoint, REGION_SCHEMATIC, URALS_EAST
+
+# Absolute path to the static directory (module-level for endpoints)
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
+# ---------------------------------------------------------------------------
+# Demo simulation helpers
+# ---------------------------------------------------------------------------
+
+_EMPTY_COSTS: Mapping[str, float] = MappingProxyType({})
+
+
+def _flat_terrain():
+    from soviet_industrialization.network import Terrain
+    return Terrain(
+        terrain_multiplier=1.0,
+        crossings=0,
+        climate_multiplier=1.0,
+        supply_access=1.0,
+    )
 
 # ---------------------------------------------------------------------------
 # Application factory
@@ -32,6 +55,14 @@ def create_app(simulation: Simulation) -> FastAPI:
     static_dir = Path(__file__).parent / "static"
     static_dir.mkdir(exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # Prototype: industry map modes
+    @app.get("/prototype/map-modes")
+    async def prototype_map_modes(request: Request):
+        proto_path = Path(__file__).parents[2] / ".scratch" / "soviet-industrialization-game" / "prototype-industry-map.html"
+        if proto_path.exists():
+            return HTMLResponse(proto_path.read_text())
+        raise HTTPException(404, "Prototype file not found")
 
     # -------------------------------------------------------------------------
     # JSON state endpoint
@@ -115,6 +146,14 @@ def create_app(simulation: Simulation) -> FastAPI:
     # -------------------------------------------------------------------------
     # Map endpoints
     # -------------------------------------------------------------------------
+
+    @app.get("/api/oblasts.json")
+    def api_oblasts() -> JSONResponse:
+        """Serve the USSR oblast GeoJSON (Russia + Ukraine + Belarus)."""
+        geojson_path = _STATIC_DIR / "ussr_oblasts_simplified.geojson"
+        with open(geojson_path) as f:
+            data = json.load(f)
+        return JSONResponse(data)
 
     @app.get("/partials/map")
     def partial_map(request: Request) -> HTMLResponse:
@@ -220,27 +259,203 @@ def create_app(simulation: Simulation) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 def make_demo_simulation() -> Simulation:
-    """Create a minimal demo simulation for the web UI."""
-    return Simulation(
-        start_date=datetime.date(1928, 1, 1),
-        resources={"coal": 100, "steel": 50, "electricity": 80, "labor": 60},
-        facilities=(
-            Facility(
-                name="Moscow steel works",
-                input_resource="coal",
-                input_per_day=2,
-                output_resource="steel",
-                output_per_day=1,
-            ),
-            Facility(
-                name="Donbas coal mine",
-                input_resource="labor",
-                input_per_day=1,
-                output_resource="coal",
-                output_per_day=3,
-            ),
+    """Create a brownfield demo simulation showcasing a 1928 USSR with
+    commissioned legacy facilities, active construction projects,
+    and connected infrastructure — the player starts with a running
+    national production system and a visible project queue.
+    """
+    from soviet_industrialization.network import (
+        InfrastructureType,
+        InfrastructureRoute,
+        MapNode,
+        RoutePlanner,
+    )
+    from soviet_industrialization.project import Project, ProjectStage
+
+    # -------------------------------------------------------------------------
+    # Infrastructure: commissioned legacy rail connections
+    # -------------------------------------------------------------------------
+    # Schematic node positions for the three detailed regions.
+    # These use the same normalized (x, y) space as REGION_SCHEMATIC in state.py.
+    donbas_node = MapNode(name="Donbas hub", x=0.62, y=0.52, network_connected=True)
+    moscow_node = MapNode(name="Moscow hub", x=0.56, y=0.38, network_connected=True)
+    leningrad_node = MapNode(name="Leningrad hub", x=0.52, y=0.28, network_connected=True)
+
+    planner = RoutePlanner(
+        nodes=(donbas_node, moscow_node, leningrad_node),
+        snap_distance=0.05,
+    )
+
+    # Donbas → Moscow: commissioned legacy rail (existing at game start)
+    donbas_moscow_route = planner.draw(
+        InfrastructureType.RAIL,
+        start=(0.62, 0.52),
+        end=(0.56, 0.38),
+        waypoints=((0.60, 0.46),),
+        terrain=_flat_terrain(),
+        commissioned=True,
+    )
+
+    # Moscow → Leningrad: commissioned legacy rail
+    moscow_leningrad_route = planner.draw(
+        InfrastructureType.RAIL,
+        start=(0.56, 0.38),
+        end=(0.52, 0.28),
+        waypoints=((0.54, 0.34),),
+        terrain=_flat_terrain(),
+        commissioned=True,
+    )
+
+    # -------------------------------------------------------------------------
+    # Commissioned legacy facilities (running at game start)
+    # -------------------------------------------------------------------------
+    commissioned_facilities = (
+        # Donbas: large coal mine producing 8 coal/day, consuming 2 labor/day
+        Facility(
+            name="Yuzovka deep mine",
+            input_resource="labor",
+            input_per_day=2,
+            output_resource="coal",
+            output_per_day=8,
+        ),
+        # Moscow: steel works converting 4 coal + 2 ore → 2 steel
+        # (Modelled as a steel output with coal as proxy for ore+coal bundle)
+        Facility(
+            name="Moscow steel works",
+            input_resource="coal",
+            input_per_day=4,
+            output_resource="steel",
+            output_per_day=2,
+        ),
+        # Leningrad: machinery plant consuming 3 steel → 1 machinery
+        Facility(
+            name="Leningrad machine works",
+            input_resource="steel",
+            input_per_day=3,
+            output_resource="machinery",
+            output_per_day=1,
         ),
     )
+
+    # -------------------------------------------------------------------------
+    # Active construction projects (in various stages)
+    # -------------------------------------------------------------------------
+    # Project 1: New coal mine in Donbas — DESIGN stage, well-supplied
+    _STAGE_COSTS_COAL_MINE = {
+        ProjectStage.SURVEY: {"labor": 3},
+        ProjectStage.DESIGN: {"design_work": 5, "survey_kits": 2},
+        ProjectStage.CIVIL_WORKS: {"steel": 6, "labor": 8},
+        ProjectStage.EQUIPMENT: {"machinery": 4},
+        ProjectStage.ELECTRICITY: {"steel": 2},
+        ProjectStage.LABOR: {"labor": 5},
+        ProjectStage.FREIGHT_ACCESS: {"coal": 2},
+        ProjectStage.MAINTENANCE: {"maintenance": 1},
+        ProjectStage.TRIAL_OPERATION: {"coal": 4},
+    }
+    coal_mine_project = Project(
+        name="Makeyevka coal mine",
+        region="Donbas",
+        nameplate_capacity=12,
+        stage_costs=_STAGE_COSTS_COAL_MINE,
+        operating_inputs={"labor": 3, "maintenance": 1},
+        sector="industry",
+        priority=10,
+    )
+
+    # Project 2: Second Moscow steel plant — CIVIL_WORKS, blocked on steel
+    moscow_steel_project = Project(
+        name="Tula steel complex",
+        region="Moscow",
+        nameplate_capacity=5,
+        stage_costs={
+            ProjectStage.SURVEY: {"labor": 2},
+            ProjectStage.DESIGN: {"design_work": 4},
+            ProjectStage.CIVIL_WORKS: {"steel": 10, "labor": 12},
+            ProjectStage.EQUIPMENT: {"machinery": 6},
+            ProjectStage.ELECTRICITY: {"steel": 3},
+            ProjectStage.LABOR: {"labor": 8},
+            ProjectStage.FREIGHT_ACCESS: {"coal": 4},
+            ProjectStage.MAINTENANCE: {"maintenance": 2},
+            ProjectStage.TRIAL_OPERATION: {"coal": 6},
+        },
+        operating_inputs={"coal": 6, "electricity": 3, "maintenance": 2},
+        sector="industry",
+        priority=8,
+    )
+
+    # Project 3: Leningrad expansion — EQUIPMENT stage, waiting on machinery
+    leningrad_expansion = Project(
+        name="Leningrad shipyard extension",
+        region="Leningrad",
+        nameplate_capacity=3,
+        stage_costs={
+            ProjectStage.SURVEY: {"labor": 2},
+            ProjectStage.DESIGN: {"design_work": 3},
+            ProjectStage.CIVIL_WORKS: {"steel": 8, "labor": 10},
+            ProjectStage.EQUIPMENT: {"machinery": 8},
+            ProjectStage.ELECTRICITY: {"steel": 2},
+            ProjectStage.LABOR: {"labor": 6},
+            ProjectStage.FREIGHT_ACCESS: {"coal": 3},
+            ProjectStage.MAINTENANCE: {"maintenance": 1},
+            ProjectStage.TRIAL_OPERATION: {"steel": 4},
+        },
+        operating_inputs={"steel": 5, "electricity": 2, "maintenance": 1},
+        sector="industry",
+        priority=6,
+    )
+
+    # -------------------------------------------------------------------------
+    # Build simulation with all pieces
+    # -------------------------------------------------------------------------
+    sim = Simulation(
+        start_date=datetime.date(1928, 1, 1),
+        resources={
+            "coal": 80,
+            "steel": 30,
+            "machinery": 5,
+            "electricity": 60,
+            "labor": 50,
+            "maintenance": 10,
+            "design_work": 8,
+            "survey_kits": 3,
+        },
+        facilities=commissioned_facilities,
+        projects=(coal_mine_project, moscow_steel_project, leningrad_expansion),
+        routes=(donbas_moscow_route, moscow_leningrad_route),
+        supply_chains=("donbas_coal_flow", "moscow_steel_flow"),
+    )
+
+    # Advance coal mine to DESIGN so it's past survey
+    ps = sim.state.projects["Makeyevka coal mine"]
+    sim._state = replace(
+        sim._state,
+        projects=MappingProxyType({
+            **dict(sim._state.projects),
+            "Makeyevka coal mine": replace(ps, stage=ProjectStage.DESIGN),
+        }),
+    )
+
+    # Advance Tula steel to CIVIL_WORKS
+    ps2 = sim.state.projects["Tula steel complex"]
+    sim._state = replace(
+        sim._state,
+        projects=MappingProxyType({
+            **dict(sim._state.projects),
+            "Tula steel complex": replace(ps2, stage=ProjectStage.CIVIL_WORKS),
+        }),
+    )
+
+    # Advance Leningrad extension to EQUIPMENT
+    ps3 = sim.state.projects["Leningrad shipyard extension"]
+    sim._state = replace(
+        sim._state,
+        projects=MappingProxyType({
+            **dict(sim._state.projects),
+            "Leningrad shipyard extension": replace(ps3, stage=ProjectStage.EQUIPMENT),
+        }),
+    )
+
+    return sim
 
 
 # Lazy-init demo app

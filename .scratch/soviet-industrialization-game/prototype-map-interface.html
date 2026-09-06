@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE: Map-First Game Interface</title>
+  <style>
+    :root { --ink:#192326; --muted:#738083; --paper:#dfe5df; --panel:#f6f4ed; --line:#bdc8c2; --red:#b34534; --gold:#d4a449; --green:#668b72; --blue:#567e8e; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:#182629; font:14px/1.4 "Trebuchet MS", sans-serif; }
+    button { border:1px solid #81918d; padding:9px 12px; color:var(--ink); background:#f6f4ed; font:700 12px "Trebuchet MS", sans-serif; cursor:pointer; }
+    button:hover { border-color:var(--red); color:var(--red); }
+    .prototype-note { position:fixed; z-index:20; top:12px; left:50%; transform:translateX(-50%); padding:6px 10px; color:#e8eee9; background:#182629dd; font-size:10px; letter-spacing:1.2px; text-transform:uppercase; }
+    .game { position:relative; height:100vh; min-height:620px; overflow:hidden; background:linear-gradient(135deg,#a7b9ae,#dae0d6 42%,#92aaa1); }
+    .map { position:absolute; inset:0; overflow:hidden; background:radial-gradient(ellipse at 47% 48%,#e7e5d6 0 24%,transparent 25%), linear-gradient(128deg,#afc1b7,#d7ded4 55%,#9fb5aa); }
+    .map:before { content:""; position:absolute; width:84%; height:130%; left:8%; top:-15%; background:#e7e5d6; clip-path:polygon(10% 5%,50% 0,74% 12%,92% 27%,84% 45%,100% 60%,79% 73%,69% 94%,39% 84%,17% 100%,22% 76%,3% 62%,14% 43%,0 27%); opacity:.93; }
+    .map:after { content:""; position:absolute; inset:0; opacity:.25; background-image:linear-gradient(25deg,transparent 49%,#738f82 50%,transparent 51%),linear-gradient(115deg,transparent 49%,#738f82 50%,transparent 51%); background-size:180px 140px; }
+    .route { position:absolute; z-index:1; height:3px; transform-origin:left center; background:#536d6e; box-shadow:0 0 0 1px #e9eee6; }
+    .route.one { width:37%; left:22%; top:47%; transform:rotate(-17deg); }
+    .route.two { width:31%; left:39%; top:57%; transform:rotate(28deg); }
+    .route.three { width:25%; left:47%; top:30%; transform:rotate(77deg); opacity:.6; }
+    .region-label { position:absolute; z-index:2; color:#647873; font:700 11px Georgia,serif; letter-spacing:1px; text-transform:uppercase; }
+    .region-label.west { left:16%; top:42%; }.region-label.urals { left:61%; top:35%; }.region-label.siberia { left:77%; top:56%; }.region-label.volga { left:38%; top:63%; }
+    .site { position:absolute; z-index:3; width:15px; height:15px; border:3px solid #f4f1e7; border-radius:50%; background:var(--green); box-shadow:0 1px 5px #1a2b2b99; cursor:pointer; }
+    .site:after { content:attr(data-name); position:absolute; top:17px; left:-3px; white-space:nowrap; color:#2c4240; font:700 11px Georgia,serif; }
+    .site.moscow { left:42%; top:43%; }.site.donbas { left:35%; top:57%; background:var(--gold); }.site.leningrad { left:34%; top:27%; background:var(--blue); }.site.urals { left:60%; top:40%; background:var(--red); }.site.siberia { left:78%; top:58%; background:#99a69d; opacity:.65; }
+    .topbar { position:absolute; z-index:5; top:0; left:0; right:0; display:flex; align-items:center; justify-content:space-between; padding:17px 24px 15px; color:#f1f4ed; background:#17282bd9; }
+    .brand { font:700 19px Georgia,serif; letter-spacing:.2px; }.date { color:#b8c9c0; font-size:12px; }.top-actions { display:flex; gap:7px; }.top-actions button { color:#f0f3ed; background:#203438; border-color:#5d7775; }
+    .map-modes { position:absolute; z-index:5; top:80px; left:24px; display:flex; gap:5px; padding:6px; background:#eff2e9dd; box-shadow:0 4px 15px #253b3b26; }.map-modes button.active { color:white; background:#284e50; border-color:#284e50; }
+    .legend { position:absolute; z-index:5; left:24px; bottom:28px; padding:13px 15px; color:#28413e; background:#f2f1e8df; font-size:11px; }.legend div { margin:5px 0; }.dot { display:inline-block; width:9px; height:9px; margin-right:7px; border-radius:50%; background:var(--green); }.dot.red { background:var(--red); }.dot.gray { background:#99a69d; }
+    .hud { position:absolute; z-index:6; right:24px; bottom:28px; display:flex; gap:9px; }.metric { min-width:105px; padding:11px 13px; background:#f2f1e8e8; }.metric b { display:block; margin-top:3px; font:700 18px Georgia,serif; }.metric span { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.7px; }
+    .backdrop { position:absolute; z-index:8; inset:0; display:flex; align-items:center; justify-content:center; background:#12232640; }.dialog { width:min(480px,calc(100vw - 32px)); padding:25px; background:var(--panel); border-top:5px solid var(--red); box-shadow:0 18px 60px #10212366; }.dialog h2 { margin:0; font:600 28px Georgia,serif; }.dialog .eyebrow { margin:0 0 9px; color:var(--red); font-size:10px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; }.dialog p { color:#5d6a6b; }.dialog dl { display:grid; grid-template-columns:120px 1fr; gap:7px; margin:19px 0; font-size:13px; }.dialog dt { color:var(--muted); }.dialog dd { margin:0; font-weight:700; }.dialog-actions { display:flex; justify-content:flex-end; gap:8px; }.dialog-actions .primary { color:#fff; background:var(--red); border-color:var(--red); }
+    .variant-b .side, .variant-c .inspector { position:absolute; z-index:6; top:74px; bottom:0; width:288px; padding:18px; background:#f4f2e9ee; box-shadow:0 3px 22px #253b3b25; }.variant-b .side { left:0; }.variant-c .inspector { right:0; width:325px; }.side h2, .inspector h2 { margin:0 0 15px; font:600 23px Georgia,serif; }.side-section { padding:14px 0; border-top:1px solid var(--line); }.side-section h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:1px; }.side-section p { margin:5px 0; color:#637273; }.mini-row { display:flex; justify-content:space-between; margin:9px 0; font-size:12px; }.mini-row b { color:var(--red); }.variant-b .map-modes { left:312px; }.variant-b .hud { right:24px; bottom:28px; }.variant-c .map-modes { left:24px; }.inspector .alert { margin:0 -18px 18px; padding:12px 18px; color:#fff; background:var(--red); }.inspector .alert strong { display:block; margin-bottom:4px; font-size:15px; }.inspector .project { padding:14px 0; border-bottom:1px solid var(--line); }.inspector .project:last-child { border:0; }.inspector .project b { display:block; margin-bottom:5px; font-family:Georgia,serif; font-size:17px; }.progress { height:5px; margin-top:10px; background:#ccd6ce; }.progress i { display:block; height:100%; background:var(--green); }.variant-c .hud { right:350px; }
+    .switcher { position:fixed; z-index:30; bottom:12px; left:50%; display:flex; align-items:center; gap:13px; transform:translateX(-50%); padding:7px 10px; color:#e9eee8; background:#17282bf2; box-shadow:0 5px 18px #10212366; font-size:11px; }.switcher button { min-width:29px; padding:4px 8px; color:#e9eee8; background:#274145; border-color:#587372; }.switcher strong { min-width:120px; text-align:center; }
+    @media (max-width:760px) { .topbar { padding:15px; }.top-actions button { display:none; }.map-modes { left:15px !important; right:15px; top:70px; overflow:auto; }.map-modes button { white-space:nowrap; }.hud { left:15px; right:15px !important; bottom:60px; }.metric { flex:1; min-width:0; }.metric b { font-size:15px; }.legend { left:15px; bottom:118px; }.variant-b .side, .variant-c .inspector { top:auto; left:0; right:0; bottom:0; width:100%; max-height:35vh; overflow:auto; }.variant-b .side { padding:12px 15px; }.variant-b .side-section { display:none; }.variant-b .side-section:first-of-type { display:block; }.variant-c .inspector { padding:14px 15px; }.variant-c .inspector .project { display:none; }.variant-c .inspector .project:first-of-type { display:block; }.dialog { align-self:flex-end; margin-bottom:42px; }.site:after { display:none; } }
+  </style>
+</head>
+<body>
+  <div class="prototype-note">UI prototype - map-first interface</div>
+  <main id="app"></main>
+  <nav class="switcher" aria-label="Prototype variants"><button id="previous" title="Previous variant">&#8592;</button><strong id="variant-name"></strong><button id="next" title="Next variant">&#8594;</button></nav>
+  <script>
+    const variants = [
+      { key:"a", name:"A - Full map + attention modal", render:renderA },
+      { key:"b", name:"B - Map + planning rail", render:renderB },
+      { key:"c", name:"C - Map + live inspector", render:renderC }
+    ];
+    const app = document.getElementById("app");
+    const map = `<div class="map"><div class="route one"></div><div class="route two"></div><div class="route three"></div><span class="region-label west">Industrial west</span><span class="region-label urals">Urals</span><span class="region-label siberia">Siberia</span><span class="region-label volga">Volga</span><button class="site leningrad" data-name="Leningrad"></button><button class="site moscow" data-name="Moscow"></button><button class="site donbas" data-name="Donbas"></button><button class="site urals" data-name="Urals"></button><button class="site siberia" data-name="Survey required"></button></div>`;
+    const topbar = `<header class="topbar"><div class="brand">Industrialization / 1928</div><div class="date">Day 184 <b>09:40</b></div><div class="top-actions"><button>Pause</button><button>Reports</button><button>Settings</button></div></header>`;
+    const modes = `<nav class="map-modes"><button class="active">Political</button><button>Industry</button><button>Network</button><button>Constraints</button><button>R&amp;D</button></nav>`;
+    const hud = `<div class="hud"><div class="metric"><span>Coal reserve</span><b>2,480 t</b></div><div class="metric"><span>Freight</span><b>68%</b></div><div class="metric"><span>Utilization</span><b>74%</b></div></div>`;
+    const legend = `<div class="legend"><div><i class="dot"></i>Commissioned site</div><div><i class="dot red"></i>Attention required</div><div><i class="dot gray"></i>Locked / unsurveyed</div></div>`;
+    const modal = `<div class="backdrop"><section class="dialog" role="dialog" aria-modal="true"><p class="eyebrow">Critical decision / simulation paused</p><h2>Reserve imported turbines?</h2><p>The Urals power expansion has one delivery window remaining. Continuing without an allocation risks stranded construction and a missed commissioning season.</p><dl><dt>Affected system</dt><dd>Imports + Urals power</dd><dt>Cost of waiting</dt><dd>Irreversible delivery loss</dd><dt>Recommended</dt><dd>Reserve equipment</dd></dl><div class="dialog-actions"><button>Dismiss</button><button>Delegate to automation</button><button class="primary">Reserve equipment</button></div></section></div>`;
+    const base = (extra, showModal) => `<div class="game ${extra}">${map}${topbar}${modes}${legend}${hud}${showModal ? modal : ""}</div>`;
+    function renderA() { return base("variant-a", true); }
+    function renderB() { return `<div class="game variant-b">${map}${topbar}${modes}${legend}${hud}<aside class="side"><h2>Plan overview</h2><div class="side-section"><h3>Attention queue <b style="color:var(--red)">1</b></h3><p><strong>Urals power expansion</strong></p><p>Critical import allocation</p><button style="margin-top:9px">Open decision</button></div><div class="side-section"><h3>Projects in motion</h3><div class="mini-row"><span>Moscow steel works</span><b>74%</b></div><div class="mini-row"><span>Donbas rail link</span><b>41%</b></div></div><div class="side-section"><h3>Selected region</h3><p>Click a site to inspect output, routes, and blockers.</p></div></aside></div>`; }
+    function renderC() { return `<div class="game variant-c">${map}${topbar}${modes}${legend}${hud}<aside class="inspector"><div class="alert"><strong>1 decision needs you</strong>Simulation paused for an irreversible risk.</div><h2>Operations</h2><div class="project"><b>Urals power expansion</b><span>Equipment allocation</span><div class="progress"><i style="width:62%"></i></div><button style="margin-top:12px">Resolve decision</button></div><div class="project"><b>Moscow steel works</b><span>Operating at 74% utilization</span><div class="progress"><i style="width:74%"></i></div></div><div class="project"><b>Donbas rail link</b><span>Construction stage: civil works</span><div class="progress"><i style="width:41%"></i></div></div></aside></div>`; }
+    function getVariant() { return new URLSearchParams(location.search).get("variant")?.toLowerCase() || "a"; }
+    function setVariant(index) { const variant = variants[(index + variants.length) % variants.length]; history.replaceState({}, "", `?variant=${variant.key}`); render(); }
+    function render() { const index = Math.max(0, variants.findIndex(item => item.key === getVariant())); const variant = variants[index]; app.innerHTML = variant.render(); document.getElementById("variant-name").textContent = variant.name; }
+    document.getElementById("previous").onclick = () => setVariant(Math.max(0, variants.findIndex(item => item.key === getVariant())) - 1);
+    document.getElementById("next").onclick = () => setVariant(Math.max(0, variants.findIndex(item => item.key === getVariant())) + 1);
+    document.addEventListener("keydown", event => { if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return; if (event.key === "ArrowLeft") document.getElementById("previous").click(); if (event.key === "ArrowRight") document.getElementById("next").click(); });
+    render();
+  </script>
+</body>
+</html>
